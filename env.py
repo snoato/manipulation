@@ -15,6 +15,9 @@ class FrankaEnvironment:
         self.data.qpos[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
         self.data.ctrl[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
         self.ik.update_configuration(self.data.qpos)
+        self.initial_ctrl = self.data.ctrl.copy()
+        self.initial_qpos = self.data.qpos.copy()
+        self.initial_qvel = self.data.qvel.copy()
 
         self.rate = RateLimiter(frequency=rate, warn=False)
 
@@ -33,6 +36,13 @@ class FrankaEnvironment:
         mujoco.mjv_defaultFreeCamera(self.model, self.viewer.cam)
         mujoco.mj_forward(self.model, self.data)
         return self.viewer
+
+    def reset(self):
+        self.data.ctrl[:] = self.initial_ctrl
+        self.data.qpos[:] = self.initial_qpos
+        self.data.qvel[:] = self.initial_qvel
+        self.ik.update_configuration(self.data.qpos)
+        self.sim_time = 0.0
 
     def step(self):
         mujoco.mj_step(self.model, self.data)
@@ -71,9 +81,12 @@ class FrankaEnvironment:
         pos = target + offset
         return pos, orientation
     
+    def get_lift_pose(self, target, offset=np.array([0, 0, 0.2]), orientation=np.array([-0.5, 0.5, 0.5, 0.5])):
+        pos = target + offset
+        return pos, orientation
     
-# need reset function to reset to initial state
-# need to save initial state
+    def get_dropoff_pose(self):
+        return np.array([0.5, 0, 0.5]), np.array([0, 1, 0, 0])
 # need to generate drop off positions for objects
 # need to randomize object positions
 # need to translate object positions into PDDL and back

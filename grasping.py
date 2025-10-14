@@ -23,10 +23,16 @@ def main():
     ik = env.get_ik()
 
     with env.launch_viewer() as viewer:
-        targets = ["cylinder1", "cylinder2", "cylinder3"]
+        targets = []
         target = None
 
         while viewer.is_running():
+            if target is None and len(targets) == 0:
+                targets = ["cylinder1", "cylinder2", "cylinder3"]
+                target = None
+                env.reset()
+                env.rest(2.0)
+
             # Update our local time
             dt = env.step()
 
@@ -44,26 +50,30 @@ def main():
                         target_pose, target_orientation = env.get_approach_pose(target_pos)
                         ik.set_target_position(target_pose, target_orientation)
                         ik.converge_ik(dt)
-                        env.controller.move_to(ik.configuration.q[:7])
+                        env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 2:
                         target_pose, target_orientation = env.get_grasp_pose(target_pos)
                         ik.set_target_position(target_pose, target_orientation)
                         ik.converge_ik(dt)
-                        env.controller.move_to(ik.configuration.q[:7])
+                        env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 3:
                         env.controller.close_gripper()
 
                     if step == 4:
-                        ik.set_target_position(target_pos+np.array([0, 0.0, 0.2]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        target_pose, target_orientation = env.get_lift_pose(target_pos)
+                        #ik.set_target_position(target_pos+np.array([0, 0.0, 0.2]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        ik.set_target_position(target_pose, target_orientation)
                         ik.converge_ik(dt)
-                        env.controller.move_to(ik.configuration.q[:7])
+                        env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 5:
-                        ik.set_target_position(target_pos+np.array([0, 0.0, 0.2])-np.array([0, 0.4, 0]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        target_pose, target_orientation = env.get_dropoff_pose()
+                        #ik.set_target_position(target_pos+np.array([0, 0.0, 0.2])-np.array([0, 0.4, 0]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        ik.set_target_position(target_pose, target_orientation)
                         ik.converge_ik(dt)
-                        env.controller.move_to(ik.configuration.q[:7])
+                        env.controller.move_to_incremental(ik.configuration.q[:7])
 
                     if step == 6:
                         env.controller.open_gripper()

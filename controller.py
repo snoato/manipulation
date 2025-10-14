@@ -63,6 +63,11 @@ class Controller:
             return
         self.trajectory = [configuration]
 
+    def move_to_incremental(self, target_configuration, step_size=0.01):
+        start = self.data.qpos.copy()[:7]
+        end = target_configuration
+        self.trajectory = Controller.linear_interpolate(start, end, step_size)
+
     def get_status(self):
         return self.status
     
@@ -86,9 +91,9 @@ class Controller:
             return
         self.trajectory = trajectory
 
-        for point in trajectory:
-            position, orientation = point
-            self.move_to(position, orientation)
+        # for point in trajectory:
+        #     position, orientation = point
+        #     self.move_to(position, orientation)
             # Add delay or synchronization as needed
 
     # need velocity controller to follow trajectories
