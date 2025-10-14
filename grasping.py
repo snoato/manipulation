@@ -1,6 +1,7 @@
 from pathlib import Path
 import time
 
+from controller import ControllerStatus
 from ik import InverseKinematics
 from env import FrankaEnvironment
 import mujoco
@@ -25,10 +26,6 @@ def main():
         targets = ["cylinder1", "cylinder2", "cylinder3"]
         target = None
 
-        cylinder_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cylinder2")
-        target_pos = data.xpos[cylinder_id].copy()
-        target_pos_set = False
-        gripper_open = True
         while viewer.is_running():
             # Update our local time
             dt = env.step()
@@ -36,45 +33,55 @@ def main():
             # high-level control logic
             if env.sim_time > 0.0 and target is None and len(targets) > 0:
                 target = targets[0]
-                cylinder_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, target)
-                target_pos = data.xpos[cylinder_id].copy()
-                target_pos_set = True
-            if target is not None:
-                if env.sim_time > 2.0:
-                    ik.set_target_position(target_pos-np.array([0, 0.1, -0.1]), np.array([-0.5, 0.5, 0.5, 0.5]))
-                    target_pos_set = True
-                if env.sim_time > 4.0:
-                    ik.set_target_position(target_pos+np.array([0, 0.0, 0.03]), np.array([-0.5, 0.5, 0.5, 0.5]))
-                    target_pos_set = True
-                if env.sim_time > 6.0:
-                    gripper_open = False
-                if env.sim_time > 8.0:
-                    ik.set_target_position(target_pos+np.array([0, 0.0, 0.2]), np.array([-0.5, 0.5, 0.5, 0.5]))
-                    target_pos_set = True
-                if env.sim_time > 10.0:
-                    ik.set_target_position(target_pos+np.array([0, 0.0, 0.2])-np.array([0, 0.4, 0]), np.array([-0.5, 0.5, 0.5, 0.5]))
-                    target_pos_set = True
-                if env.sim_time > 12.0:
-                    gripper_open = True
-                    env.sim_time = 0.0  # reset time
-                    target = None
-                    if len(targets) > 1:
-                        targets = targets[1:]
-                    else:
-                        targets = []
-                        time.sleep(2.0)
+                target_pos = env.get_object_position(target)
+                step = 0 
+            if target is not None: 
+                if env.controller.get_status() == ControllerStatus.IDLE:
+                    step += 1
+                    print(f"Time: {env.sim_time:.2f}, Step: {step}")
 
+                    if step == 1:
+                        target_pose, target_orientation = env.get_approach_pose(target_pos)
+                        ik.set_target_position(target_pose, target_orientation)
+                        ik.converge_ik(dt)
+                        env.controller.move_to(ik.configuration.q[:7])
+                    
+                    if step == 2:
+                        target_pose, target_orientation = env.get_grasp_pose(target_pos)
+                        ik.set_target_position(target_pose, target_orientation)
+                        ik.converge_ik(dt)
+                        env.controller.move_to(ik.configuration.q[:7])
+                    
+                    if step == 3:
+                        env.controller.close_gripper()
 
+                    if step == 4:
+                        ik.set_target_position(target_pos+np.array([0, 0.0, 0.2]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        ik.converge_ik(dt)
+                        env.controller.move_to(ik.configuration.q[:7])
+                    
+                    if step == 5:
+                        ik.set_target_position(target_pos+np.array([0, 0.0, 0.2])-np.array([0, 0.4, 0]), np.array([-0.5, 0.5, 0.5, 0.5]))
+                        ik.converge_ik(dt)
+                        env.controller.move_to(ik.configuration.q[:7])
+
+                    if step == 6:
+                        env.controller.open_gripper()
+                    
+                    if step == 7:
+                        target = None
+                        step = 0
+                        if len(targets) > 1:
+                            targets = targets[1:]
+                        else:
+                            targets = []
+                            time.sleep(2.0)
+
+                if step == 3 or step == 6:
+                    env.rest(2.0)
 
             # low-level control logic
-            if target_pos_set:
-                ik.converge_ik(dt)
-                data.ctrl[:7] = ik.configuration.q[:7]
-                target_pos_set = False
-            if gripper_open:
-                data.ctrl[7] = 0.04  # open gripper
-            if not gripper_open:
-                data.ctrl[7] = -0.2  # close gripper
+            env.controller.step()
 
 
 main()
