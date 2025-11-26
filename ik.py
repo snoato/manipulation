@@ -8,8 +8,8 @@ class InverseKinematics:
         self.data = data
         self.aux_tasks = []
         self.solver = "quadprog"
-        self.pos_threshold = 1e-4
-        self.ori_threshold = 1e-4
+        self.pos_threshold = 0.005
+        self.ori_threshold = 1e-3
         self.max_iters = 60
         self.ee_task = None
         self.posture_task = None
@@ -76,6 +76,7 @@ class InverseKinematics:
 
             if pos_achieved and ori_achieved:
                 return True
+            
         return False
     
     def update_configuration(self, qpos):
