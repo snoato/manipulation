@@ -49,13 +49,15 @@ def main():
                     if step == 1:
                         target_pose, target_orientation = env.get_approach_pose(target_pos)
                         ik.set_target_position(target_pose, target_orientation)
-                        ik.converge_ik(dt)
+                        converged = ik.converge_ik(dt)
+                        print("IK result:", "Converged" if converged else "Not converged")
                         env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 2:
                         target_pose, target_orientation = env.get_grasp_pose(target_pos)
                         ik.set_target_position(target_pose, target_orientation)
-                        ik.converge_ik(dt)
+                        converged = ik.converge_ik(dt)
+                        print("IK result:", "Converged" if converged else "Not converged")
                         env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 3:
@@ -63,16 +65,16 @@ def main():
 
                     if step == 4:
                         target_pose, target_orientation = env.get_lift_pose(target_pos)
-                        #ik.set_target_position(target_pos+np.array([0, 0.0, 0.2]), np.array([-0.5, 0.5, 0.5, 0.5]))
                         ik.set_target_position(target_pose, target_orientation)
-                        ik.converge_ik(dt)
+                        converged = ik.converge_ik(dt)
+                        print("IK result:", "Converged" if converged else "Not converged")
                         env.controller.move_to_incremental(ik.configuration.q[:7])
                     
                     if step == 5:
                         target_pose, target_orientation = env.get_dropoff_pose()
-                        #ik.set_target_position(target_pos+np.array([0, 0.0, 0.2])-np.array([0, 0.4, 0]), np.array([-0.5, 0.5, 0.5, 0.5]))
                         ik.set_target_position(target_pose, target_orientation)
-                        ik.converge_ik(dt)
+                        converged = ik.converge_ik(dt)
+                        print("IK result:", "Converged" if converged else "Not converged")
                         env.controller.move_to_incremental(ik.configuration.q[:7])
 
                     if step == 6:
