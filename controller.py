@@ -11,10 +11,27 @@ class ControllerStatus(enum.Enum):
     GRASPING = "grasping"
 
 class Controller:
-    def linear_interpolate(start, end, step_size):
+    def interpolate_linear_points(start, end, step_size):
         steps = int(np.linalg.norm(end - start) / step_size)
         trajectory = [start + (end - start) * (i / steps) for i in range(steps + 1)]
         return trajectory
+
+    def interpolate_linear_path(self, path, steps_per_segment = 10, step_size = None):
+        if len(path) <= 1:
+            return path
+        
+        interpolated = [path[0].copy()]
+        for i in range(len(path) - 1):
+            start, end = path[i], path[i + 1]
+            if step_size is not None:
+                steps = max(1, int(np.ceil(np.linalg.norm(end - start) / step_size)))
+            else:
+                steps = steps_per_segment
+            
+            for step in range(1, steps + 1):
+                alpha = step / steps
+                interpolated.append((1 - alpha) * start + alpha * end)
+        return interpolated
     
     def __init__(self, model, data):
         self.model = model
@@ -66,7 +83,7 @@ class Controller:
     def move_to_incremental(self, target_configuration, step_size=0.01):
         start = self.data.qpos.copy()[:7]
         end = target_configuration
-        self.trajectory = Controller.linear_interpolate(start, end, step_size)
+        self.trajectory = Controller.interpolate_linear_points(start, end, step_size)
 
     def get_status(self):
         return self.status
