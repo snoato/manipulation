@@ -1,10 +1,14 @@
-# RRT Star based motion planning for our environment
+"""RRT* motion planner implementation."""
+
 import numpy as np
 from typing import List, Optional
 
+from manipulation.core.base_mp import BaseMotionPlanner
+
 
 class Node:
-    """RRT* tree node"""
+    """RRT* tree node."""
+    
     def __init__(self, config: np.ndarray):
         self.config = config.copy()
         self.parent: Optional[Node] = None
@@ -12,8 +16,17 @@ class Node:
         self.children: List[Node] = []
 
 
-class MotionPlanner:
-    def __init__(self, environment, max_iterations = 5000, step_size=0.1, search_radius=0.5, goal_threshold=0.05):
+class RRTStar(BaseMotionPlanner):
+    """RRT* motion planner for robot manipulation."""
+
+    def __init__(
+        self,
+        environment,
+        max_iterations: int = 5000,
+        step_size: float = 0.1,
+        search_radius: float = 0.5,
+        goal_threshold: float = 0.05
+    ):
         self.env = environment
         self.model = environment.get_model()
         self.data = environment.get_data()
@@ -46,7 +59,12 @@ class MotionPlanner:
             return to_config.copy()
         return from_config + (direction / dist) * self.step_size
     
-    def is_path_collision_free(self, config1: np.ndarray, config2: np.ndarray, steps: int = 10) -> bool:
+    def is_path_collision_free(
+        self,
+        config1: np.ndarray,
+        config2: np.ndarray,
+        steps: int = 10
+    ) -> bool:
         for i in range(steps + 1):
             alpha = i / steps
             config = (1 - alpha) * config1 + alpha * config2
@@ -66,7 +84,9 @@ class MotionPlanner:
         
         for near_node in near_nodes:
             potential_cost = near_node.cost + self.distance(near_node.config, new_node.config)
-            if potential_cost < min_cost and self.is_path_collision_free(near_node.config, new_node.config):
+            if potential_cost < min_cost and self.is_path_collision_free(
+                near_node.config, new_node.config
+            ):
                 best_parent = near_node
                 min_cost = potential_cost
         
@@ -85,7 +105,9 @@ class MotionPlanner:
                 continue
             
             potential_cost = new_node.cost + self.distance(new_node.config, near_node.config)
-            if potential_cost < near_node.cost and self.is_path_collision_free(new_node.config, near_node.config):
+            if potential_cost < near_node.cost and self.is_path_collision_free(
+                new_node.config, near_node.config
+            ):
                 if near_node.parent:
                     near_node.parent.children.remove(near_node)
                 near_node.parent = new_node
@@ -98,7 +120,12 @@ class MotionPlanner:
         for child in node.children:
             self._update_costs_recursive(child, child.cost + cost_diff)
 
-    def plan(self, start_config: np.ndarray, goal_config: np.ndarray, max_iterations: Optional[int] = None) -> Optional[List[np.ndarray]]:
+    def plan(
+        self,
+        start_config: np.ndarray,
+        goal_config: np.ndarray,
+        max_iterations: Optional[int] = None
+    ) -> Optional[List[np.ndarray]]:
         if max_iterations is None:
             max_iterations = self.max_iterations
         
@@ -135,7 +162,10 @@ class MotionPlanner:
             nearest.children.append(new_node)
             
             # Adaptive radius
-            radius = min(self.search_radius, self.search_radius * np.power(np.log(len(tree)) / len(tree), 1.0 / 7.0))
+            radius = min(
+                self.search_radius,
+                self.search_radius * np.power(np.log(len(tree)) / len(tree), 1.0 / 7.0)
+            )
             near = self.near_nodes(tree, new_config, radius)
             
             new_node = self.choose_parent(new_node, near)
@@ -169,7 +199,11 @@ class MotionPlanner:
         path.reverse()
         return path
     
-    def smooth_path(self, path: List[np.ndarray], max_iterations: int = 100) -> List[np.ndarray]:
+    def smooth_path(
+        self,
+        path: List[np.ndarray],
+        max_iterations: int = 100
+    ) -> List[np.ndarray]:
         if len(path) <= 2:
             return path
         
@@ -183,7 +217,13 @@ class MotionPlanner:
                 smoothed = smoothed[:i+1] + smoothed[j:]
         return smoothed
     
-    def plan_to_pose(self, target_pos: np.ndarray, target_quat: np.ndarray, dt: float = 0.01, max_iterations: Optional[int] = None) -> Optional[List[np.ndarray]]:
+    def plan_to_pose(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        dt: float = 0.01,
+        max_iterations: Optional[int] = None
+    ) -> Optional[List[np.ndarray]]:
         start_config = self.data.qpos[:7].copy()
         self.ik.update_configuration(self.data.qpos)
         self.ik.set_target_position(target_pos, target_quat)
@@ -199,4 +239,3 @@ class MotionPlanner:
         if len(path) < 2:
             return 0.0
         return sum(self.distance(path[i], path[i + 1]) for i in range(len(path) - 1))
-    

@@ -1,9 +1,16 @@
+"""Inverse kinematics implementation using MINK."""
+
 import mujoco
 import numpy as np
 import mink
 
-class InverseKinematics:
-    def __init__(self, model, data, target_name="target"):
+from manipulation.core.base_ik import BaseIK
+
+
+class MinkIK(BaseIK):
+    """Inverse kinematics solver using the MINK library."""
+
+    def __init__(self, model, data, target_name: str = "target"):
         self.model = model
         self.data = data
         self.aux_tasks = []
@@ -50,17 +57,11 @@ class InverseKinematics:
         tasks.extend(self.aux_tasks)
         return tasks
 
-    def set_target_position(self, pos, quat):
+    def set_target_position(self, pos: np.ndarray, quat: np.ndarray):
         self.data.mocap_pos[0] = pos
         self.data.mocap_quat[0] = quat
 
-    def converge_ik(
-        self, dt
-    ):
-        """
-        Runs up to 'max_iters' of IK steps. Returns True if position and orientation
-        are below thresholds, otherwise False.
-        """
+    def converge_ik(self, dt: float) -> bool:
         # Update the end effector task target from the mocap body
         T_wt = mink.SE3.from_mocap_name(self.model, self.data, self.target_name)
         self.ee_task.set_target(T_wt)
@@ -79,5 +80,5 @@ class InverseKinematics:
             
         return False
     
-    def update_configuration(self, qpos):
+    def update_configuration(self, qpos: np.ndarray):
         self.configuration.update(qpos)

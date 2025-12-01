@@ -1,20 +1,23 @@
-"""
-Example demonstrating RRT* motion planning with the Franka Panda robot.
-"""
+"""Example demonstrating RRT* motion planning with the Franka Panda robot."""
+
+from pathlib import Path
 import time
 import numpy as np
-from env import FrankaEnvironment
-from mp import MotionPlanner
+
+from manipulation import FrankaEnvironment, RRTStar
+
+_HERE = Path(__file__).parent
+_XML = _HERE / ".." / "manipulation" / "environments" / "assets" / "franka_emika_panda" / "scene.xml"
 
 
 def main():
     # Initialize environment
     print("Initializing environment...")
-    env = FrankaEnvironment("envs/franka_emika_panda/scene.xml")
+    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
     
     # Create motion planner
     print("Creating motion planner...")
-    planner = MotionPlanner(env)
+    planner = RRTStar(env)
     
     # Define start and goal configurations
     # Start: Home position
@@ -42,30 +45,33 @@ def main():
     
     # Interpolate for smoother motion
     print("\nInterpolating path...")
-    interpolated_path = env.controller.interpolate_linear_path(smoothed_path, steps_per_segment=5)
+    interpolated_path = env.controller.interpolate_linear_path(smoothed_path, step_size=0.05)
     print(f"Path interpolated: {len(smoothed_path)} -> {len(interpolated_path)} waypoints")
     
-    # Visualize the path
+    # Visualize and execute the path
     print("\nLaunching viewer to visualize path...")
-    viewer = env.launch_viewer()
-    
-    # Execute the path
-    print("\nExecuting path...")
-    for i, config in enumerate(interpolated_path):
-        env.data.qpos[:7] = config
-        env.step()
+    with env.launch_viewer() as viewer:
+        # Execute the path
+        print("\nExecuting path...")
+        for i, config in enumerate(interpolated_path):
+            env.data.qpos[:7] = config
+            env.step()
+            
+            if (i + 1) % 20 == 0:
+                print(f"Progress: {i+1}/{len(interpolated_path)} waypoints")
         
-        time.sleep(0.5)
-
-        if (i + 1) % 20 == 0:
-            print(f"Progress: {i+1}/{len(interpolated_path)} waypoints")
-    
-    print("\nPath execution complete!")
-    print("Close the viewer window to exit.")
-    
-    # Keep viewer open
-    while viewer.is_running():
-        env.step()
+        print("\nPath execution complete!")
+        print("Holding final position for 3 seconds...")
+        
+        # Hold final position
+        for _ in range(int(3.0 / env.rate_limiter.dt)):
+            env.step()
+        
+        print("Close the viewer window to exit.")
+        
+        # Keep viewer open
+        while viewer.is_running():
+            env.step()
 
 
 if __name__ == "__main__":
