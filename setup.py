@@ -11,6 +11,7 @@ setup(
         "numpy>=1.20.0",
         "mink>=0.0.1",
         "loop-rate-limiters>=1.0.0",
+        "matplotlib>=3.0.0",
     ],
     python_requires=">=3.8",
     package_data={
