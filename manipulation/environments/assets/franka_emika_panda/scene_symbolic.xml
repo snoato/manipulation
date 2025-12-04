@@ -39,6 +39,12 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    
+    <!-- Cameras for RGB-D capture -->
+    <camera name="top_camera" pos="0.4 0.4 1.5" xyaxes="1 0 0 0 1 0" fovy="60"/>
+    <camera name="side_camera" pos="1.6 0.55 0.8" euler="0 1.07 1.57" fovy="55"/>
+    <camera name="front_camera" pos="0.4 -0.4 0.7" xyaxes="1 0 0 0 0.4 0.8" fovy="60"/>
+    
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" contype="1"/>
 
     <body name="target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true"> 
