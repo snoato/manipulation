@@ -1,6 +1,10 @@
 """Inverse kinematics implementation using MINK."""
 
 import mujoco
+try:
+    import mujoco.viewer
+except ImportError:
+    pass
 import numpy as np
 import mink
 
@@ -15,7 +19,7 @@ class MinkIK(BaseIK):
         self.data = data
         self.aux_tasks = []
         self.solver = "quadprog"
-        self.pos_threshold = 0.006
+        self.pos_threshold = 0.007
         self.ori_threshold = 1e-3
         self.max_iters = 600
         self.ee_task = None

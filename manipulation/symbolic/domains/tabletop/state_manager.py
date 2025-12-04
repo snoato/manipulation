@@ -1,6 +1,10 @@
 """State management for tabletop symbolic planning - grounding, initialization, and sampling."""
 
 import mujoco
+try:
+    import mujoco.viewer
+except ImportError:
+    pass
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional

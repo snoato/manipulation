@@ -2,6 +2,10 @@
 
 import cv2
 import mujoco
+try:
+    import mujoco.viewer
+except ImportError:
+    pass
 import numpy as np
 from typing import Optional, List, Tuple
 

@@ -115,7 +115,7 @@ def visualize_grid_state(state_manager: StateManager,
     # Add info text
     info_text = f"Grid: {grid.cells_x}×{grid.cells_y} cells ({grid.cell_size*100:.1f}cm)\n"
     info_text += f"Cylinders: {len(state['cylinders'])}\n"
-    info_text += f"Gripper: {'empty' if state['gripper_empty'] else f'holding {state['holding']}'}"
+    info_text += f"Gripper: {'empty' if state['gripper_empty'] else f'holding'}"
     ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
            fontsize=10, verticalalignment='top',
            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))

@@ -2,6 +2,10 @@
 
 import numpy as np
 import mujoco
+try:
+    import mujoco.viewer
+except ImportError:
+    pass
 from typing import List, Optional
 
 from manipulation.core.base_mp import BaseMotionPlanner

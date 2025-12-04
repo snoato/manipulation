@@ -8,6 +8,10 @@ into a uniform grid of cells for PDDL-based symbolic planning.
 import numpy as np
 from typing import Dict, List, Set, Tuple
 import mujoco
+try:
+    import mujoco.viewer
+except ImportError:
+    pass
 
 from manipulation.symbolic.base_domain import BaseDomain
 
