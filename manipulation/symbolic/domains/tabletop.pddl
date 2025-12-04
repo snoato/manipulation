@@ -2,12 +2,17 @@
   (:requirements :strips :typing)
   
   (:types
-    cell cylinder gripper
+    cell cylinder gripper direction
+  )
+  
+  (:constants
+    north south east west - direction
   )
   
   (:predicates
-    (adjacent ?c1 - cell ?c2 - cell)  ; cells c1 and c2 are adjacent
-    (occupied ?c - cell)               ; cell c contains a cylinder
+    (adjacent ?dir - direction ?c1 - cell ?c2 - cell)  ; cell c2 is adjacent to c1 in direction dir
+    (occupied ?c - cell ?cyl - cylinder)  ; cell c contains cylinder cyl
+    (empty ?c - cell)                     ; cell c is empty
     (holding ?g - gripper ?cyl - cylinder)  ; gripper g is holding cylinder cyl
     (gripper-empty ?g - gripper)       ; gripper g is not holding anything
   )
@@ -16,11 +21,12 @@
     :parameters (?g - gripper ?cyl - cylinder ?c - cell)
     :precondition (and
       (gripper-empty ?g)
-      (occupied ?c)
+      (occupied ?c ?cyl)
     )
     :effect (and
       (not (gripper-empty ?g))
-      (not (occupied ?c))
+      (not (occupied ?c ?cyl))
+      (empty ?c)
       (holding ?g ?cyl)
     )
   )
@@ -29,12 +35,24 @@
     :parameters (?g - gripper ?cyl - cylinder ?c - cell)
     :precondition (and
       (holding ?g ?cyl)
-      (not (occupied ?c))
+      (empty ?c)
     )
     :effect (and
       (gripper-empty ?g)
       (not (holding ?g ?cyl))
-      (occupied ?c)
+      (not (empty ?c))
+      (occupied ?c ?cyl)
+    )
+  )
+
+  (:action drop
+    :parameters (?g - gripper ?cyl - cylinder)
+    :precondition (and
+      (holding ?g ?cyl)
+    )
+    :effect (and
+      (gripper-empty ?g)
+      (not (holding ?g ?cyl))
     )
   )
 )

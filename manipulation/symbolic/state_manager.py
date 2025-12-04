@@ -9,68 +9,61 @@ import re
 from manipulation.symbolic.grid_domain import GridDomain
 
 
+def extract_grid_dimensions_from_pddl(pddl_content: str) -> Tuple[int, int]:
+    """
+    Extract grid dimensions from PDDL cell objects.
+    
+    Parses cell names like 'cell_X_Y' to find maximum indices.
+    
+    Args:
+        pddl_content: PDDL file content as string
+        
+    Returns:
+        (cells_x, cells_y) tuple representing grid dimensions
+        
+    Raises:
+        ValueError: If no cell objects found in PDDL file
+    """
+    cell_pattern = r'cell_(\d+)_(\d+)'
+    matches = re.findall(cell_pattern, pddl_content)
+    
+    if not matches:
+        raise ValueError("No cell objects found in PDDL file")
+    
+    max_x = max(int(x) for x, y in matches)
+    max_y = max(int(y) for x, y in matches)
+    
+    return (max_x + 1, max_y + 1)
+
+
 class StateManager:
     """Manages state grounding, initialization, and randomization for symbolic planning."""
     
     # Cylinder specifications: (radius, height) indexed by cylinder number
     CYLINDER_SPECS = {
-        **{i: (0.015, 0.10) for i in range(15)},      # 0-14: thin
-        **{i: (0.020, 0.12) for i in range(15, 25)},  # 15-24: medium
-        **{i: (0.025, 0.16) for i in range(25, 30)}   # 25-29: thick
+        **{i: (0.0125, 0.08) for i in range(15)},     # 0-14: thin (1.25cm radius, 8cm height)
+        **{i: (0.0175, 0.10) for i in range(15, 25)}, # 15-24: medium (1.75cm radius, 10cm height)
+        **{i: (0.020, 0.12) for i in range(25, 30)}   # 25-29: thick (2.0cm radius, 12cm height)
     }
     
-    def __init__(self, grid_domain: GridDomain, model: mujoco.MjModel, data: mujoco.MjData):
+    def __init__(self, grid_domain: GridDomain, env):
         """
         Initialize state manager.
         
         Args:
             grid_domain: GridDomain instance
-            model: MuJoCo model
-            data: MuJoCo data
+            env: FrankaEnvironment instance
         """
         self.grid = grid_domain
-        self.model = model
-        self.data = data
+        self.env = env
+        self.model = env.get_model()
+        self.data = env.get_data()
         self.gripper_holding = None  # Track what gripper is holding
         
-    def _compute_circle_rectangle_intersection_area(self, 
-                                                     circle_x: float, 
-                                                     circle_y: float,
-                                                     circle_r: float,
-                                                     rect_min_x: float,
-                                                     rect_max_x: float,
-                                                     rect_min_y: float,
-                                                     rect_max_y: float) -> float:
-        """
-        Compute intersection area between circle and rectangle.
-        Uses Monte Carlo sampling for approximation.
-        
-        Args:
-            circle_x, circle_y, circle_r: Circle center and radius
-            rect_min_x, rect_max_x, rect_min_y, rect_max_y: Rectangle bounds
-            
-        Returns:
-            Intersection area
-        """
-        # Simple approximation: sample points in rectangle and check if in circle
-        samples = 100
-        count = 0
-        
-        for _ in range(samples):
-            x = np.random.uniform(rect_min_x, rect_max_x)
-            y = np.random.uniform(rect_min_y, rect_max_y)
-            
-            if (x - circle_x)**2 + (y - circle_y)**2 <= circle_r**2:
-                count += 1
-        
-        rect_area = (rect_max_x - rect_min_x) * (rect_max_y - rect_min_y)
-        intersection_area = (count / samples) * rect_area
-        
-        return intersection_area
     
     def _get_cylinder_occupied_cells(self, cyl_idx: int) -> Set[str]:
         """
-        Get all cells occupied by a cylinder (≥50% overlap rule).
+        Get all cells occupied by a cylinder (cell center within radius).
         
         Args:
             cyl_idx: Cylinder index (0-29)
@@ -78,48 +71,28 @@ class StateManager:
         Returns:
             Set of cell names occupied by this cylinder
         """
-        # Get cylinder position
+        # Get cylinder position using environment wrapper
         body_name = f"cylinder_{cyl_idx}"
-        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        pos, _ = self.env.get_object_pose(body_name)
         
-        if body_id < 0:
+        if pos is None:
             return set()
         
-        # Get position from qpos (first 3 elements of the body's freejoint)
-        joint_name = f"{body_name}_freejoint"
-        joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
-        
-        if joint_id < 0:
-            return set()
-        
-        joint_qposadr = self.model.jnt_qposadr[joint_id]
-        cyl_x = self.data.qpos[joint_qposadr]
-        cyl_y = self.data.qpos[joint_qposadr + 1]
-        cyl_z = self.data.qpos[joint_qposadr + 2]
+        cyl_x, cyl_y, cyl_z = pos
         
         # Skip if cylinder is hidden (far off to the side at x=100)
         if cyl_x > 50.0:
             return set()
         
-        # Get cylinder radius
-        radius, _ = self.CYLINDER_SPECS[cyl_idx]
-        
-        # Find all cells with ≥50% overlap
-        occupied = set()
-        cell_area = self.grid.cell_size ** 2
-        threshold_area = 0.5 * cell_area
-        
-        for cell_name, cell_data in self.grid.cells.items():
-            rect_bounds = cell_data['bounds']
-            intersection = self._compute_circle_rectangle_intersection_area(
-                cyl_x, cyl_y, radius,
-                rect_bounds[0], rect_bounds[1], rect_bounds[2], rect_bounds[3]
-            )
-            
-            if intersection >= threshold_area:
-                occupied.add(cell_name)
-        
-        return occupied
+        # Find the cell containing the cylinder's center position
+        # We use abstract representation: one cylinder = one cell (its center cell)
+        # This allows PDDL pick/place actions to work correctly
+        try:
+            center_cell = self.grid.get_cell_at_position(cyl_x, cyl_y)
+            return {center_cell}
+        except ValueError:
+            # Cylinder is outside the grid
+            return set()
     
     def ground_state(self) -> Dict[str, any]:
         """
@@ -175,13 +148,9 @@ class StateManager:
         
         # Adjacency (only include once per pair)
         added_adjacencies = set()
-        for cell, neighbors in self.grid.adjacency.items():
-            for neighbor in neighbors:
-                pair = tuple(sorted([cell, neighbor]))
-                if pair not in added_adjacencies:
-                    init_predicates.append(f"    (adjacent {pair[0]} {pair[1]})")
-                    init_predicates.append(f"    (adjacent {pair[1]} {pair[0]})")
-                    added_adjacencies.add(pair)
+        for cell, directions in self.grid.directional_adjacency.items():
+            for direction, neighbor in directions.items():
+                init_predicates.append(f"    (adjacent {direction} {cell} {neighbor})")
         
         # Occupied cells
         occupied_cells = set()
@@ -258,111 +227,125 @@ class StateManager:
             
             # Get cylinder height - position center slightly above table to avoid initial contact
             _, height = self.CYLINDER_SPECS[cyl_idx]
-            centroid_z = self.grid.table_height + height / 2.0 + 0.1  # 0.5cm clearance
+            centroid_z = self.grid.table_height + height / 2.0 + 0.3  # 0.5cm clearance
             
             # Set cylinder position
             self._set_cylinder_position(cyl_idx, centroid_x, centroid_y, centroid_z)
         
         # Zero out all velocities to prevent wobbling
-        self.data.qvel[:] = 0
+        self.env.reset_velocities()
     
     def sample_random_state(self, 
-                           n_cylinders: Optional[int] = None,
-                           seed: Optional[int] = None) -> str:
+                       n_cylinders: Optional[int] = 5,
+                       seed: Optional[int] = None):
         """
-        Generate random valid state.
+        Generate and initialize a random valid state in MuJoCo.
         
         Args:
-            n_cylinders: Number of cylinders to place (1-30), random if None
+            n_cylinders: Number of cylinders to place (1-30)
             seed: Random seed
-            
-        Returns:
-            PDDL init section string
         """
         if seed is not None:
             np.random.seed(seed)
         
-        if n_cylinders is None:
-            n_cylinders = np.random.randint(1, 31)
-        
         n_cylinders = max(1, min(30, n_cylinders))
+        
+        # Create occupancy grid (True = occupied, False = free)
+        occupancy_grid = np.zeros((self.grid.cells_x, self.grid.cells_y), dtype=bool)
+        
+        # Track cylinder placements
+        cylinder_positions = {}  # cyl_idx -> (cell_x, cell_y)
         
         # Select random cylinders
         selected_cylinders = np.random.choice(30, n_cylinders, replace=False)
         
-        # Try to place cylinders without overlap
-        cylinder_positions = {}
-        occupied_cells_global = set()
+        # Hide all cylinders first
+        for cyl_idx in range(30):
+            self._hide_cylinder(cyl_idx)
         
-        max_attempts = 1000
-        placed = 0
-        
-        for attempt in range(max_attempts):
-            if placed >= n_cylinders:
-                break
-            
-            cyl_idx = selected_cylinders[placed]
+        for cyl_idx in selected_cylinders:
+            # Get cylinder diameter in cells
             radius, _ = self.CYLINDER_SPECS[cyl_idx]
+            diameter = 2 * radius
+            diameter_cells = int(np.ceil(diameter / self.grid.cell_size))
             
-            # Sample random cell
-            cell_name = np.random.choice(list(self.grid.cells.keys()))
-            center_x, center_y = self.grid.cells[cell_name]['center']
+            # Find all free cells (not occupied)
+            free_cells = []
+            for x in range(self.grid.cells_x):
+                for y in range(self.grid.cells_y):
+                    if not occupancy_grid[x, y]:
+                        free_cells.append((x, y))
             
-            # Compute which cells this cylinder would occupy
-            potential_occupied = set()
-            cell_area = self.grid.cell_size ** 2
-            threshold_area = 0.5 * cell_area
+            if not free_cells:
+                print(f"Warning: No free cells for cylinder_{cyl_idx}")
+                continue
             
-            for check_cell, cell_data in self.grid.cells.items():
-                rect_bounds = cell_data['bounds']
-                intersection = self._compute_circle_rectangle_intersection_area(
-                    center_x, center_y, radius,
-                    rect_bounds[0], rect_bounds[1], rect_bounds[2], rect_bounds[3]
-                )
+            # Try random free cells until we find one with free surroundings
+            np.random.shuffle(free_cells)
+            placed = False
+            
+            for cell_x, cell_y in free_cells:
+                # Check if surrounding cells (within diameter) are also free
+                all_clear = True
+                for dx in range(-diameter_cells, diameter_cells + 1):
+                    for dy in range(-diameter_cells, diameter_cells + 1):
+                        check_x = cell_x + dx
+                        check_y = cell_y + dy
+                        
+                        # Skip if out of bounds
+                        if check_x < 0 or check_x >= self.grid.cells_x or \
+                           check_y < 0 or check_y >= self.grid.cells_y:
+                            continue
+                        
+                        # Check if this cell is occupied
+                        if occupancy_grid[check_x, check_y]:
+                            all_clear = False
+                            break
+                    
+                    if not all_clear:
+                        break
                 
-                if intersection >= threshold_area:
-                    potential_occupied.add(check_cell)
+                if all_clear:
+                    # Place cylinder at this cell center
+                    cell_name = f"cell_{cell_x}_{cell_y}"
+                    center_x, center_y = self.grid.cells[cell_name]['center']
+                    _, height = self.CYLINDER_SPECS[cyl_idx]
+                    center_z = self.grid.table_height + height / 2.0 + 0.013  # 0.3cm clearance
+                    
+                    self._set_cylinder_position(cyl_idx, center_x, center_y, center_z)
+                    cylinder_positions[cyl_idx] = (cell_x, cell_y)
+                    
+                    # Mark surrounding cells as occupied (with spacing)
+                    for dx in range(-diameter_cells, diameter_cells + 1):
+                        for dy in range(-diameter_cells, diameter_cells + 1):
+                            mark_x = cell_x + dx
+                            mark_y = cell_y + dy
+                            
+                            if 0 <= mark_x < self.grid.cells_x and \
+                               0 <= mark_y < self.grid.cells_y:
+                                occupancy_grid[mark_x, mark_y] = True
+                    
+                    placed = True
+                    break
             
-            # Check if placement is valid (no overlap with existing cylinders)
-            if not potential_occupied.intersection(occupied_cells_global):
-                cylinder_positions[cyl_idx] = (center_x, center_y, potential_occupied)
-                occupied_cells_global.update(potential_occupied)
-                placed += 1
+            if not placed:
+                print(f"Warning: Could not place cylinder_{cyl_idx} - no valid location")
         
-        # Generate PDDL init predicates
-        predicates = []
-        predicates.append("(gripper-empty gripper1)")
+        # Zero velocities and update simulation
+        self.env.reset_velocities()
+        self.env.step()
+        self.env.reset_velocities()
+        self.env.forward()
         
-        for cyl_idx, (x, y, cells) in cylinder_positions.items():
-            for cell in cells:
-                predicates.append(f"(occupied {cell} cylinder_{cyl_idx})")
-        
-        # Mark empty cells
-        for cell in self.grid.cells.keys():
-            if cell not in occupied_cells_global:
-                predicates.append(f"(empty {cell})")
-        
-        return "\n    ".join(predicates)
+        print(f"Placed {len(cylinder_positions)} cylinders successfully")
     
     def _hide_cylinder(self, cyl_idx: int):
         """Move cylinder far off to the side to hide it."""
-        joint_name = f"cylinder_{cyl_idx}_freejoint"
-        joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
-        
-        if joint_id >= 0:
-            joint_qposadr = self.model.jnt_qposadr[joint_id]
-            _, height = self.CYLINDER_SPECS[cyl_idx]
-            self.data.qpos[joint_qposadr:joint_qposadr+3] = [100.0, 0.0, height]
-            self.data.qpos[joint_qposadr+3:joint_qposadr+7] = [1, 0, 0, 0]  # identity quat
-            self.data.qvel[self.model.jnt_dofadr[joint_id]:self.model.jnt_dofadr[joint_id]+6] = 0
+        body_name = f"cylinder_{cyl_idx}"
+        _, height = self.CYLINDER_SPECS[cyl_idx]
+        self.env.set_object_pose(body_name, np.array([100.0, 0.0, height]))
     
     def _set_cylinder_position(self, cyl_idx: int, x: float, y: float, z: float):
         """Set cylinder position."""
-        joint_name = f"cylinder_{cyl_idx}_freejoint"
-        joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
-        
-        if joint_id >= 0:
-            joint_qposadr = self.model.jnt_qposadr[joint_id]
-            self.data.qpos[joint_qposadr:joint_qposadr+3] = [x, y, z]
-            self.data.qpos[joint_qposadr+3:joint_qposadr+7] = [1, 0, 0, 0]  # identity quat
-            self.data.qvel[self.model.jnt_dofadr[joint_id]:self.model.jnt_dofadr[joint_id]+6] = 0
+        body_name = f"cylinder_{cyl_idx}"
+        self.env.set_object_pose(body_name, np.array([x, y, z]))

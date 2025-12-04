@@ -1,6 +1,7 @@
 """RRT* motion planner implementation."""
 
 import numpy as np
+import mujoco
 from typing import List, Optional
 
 from manipulation.core.base_mp import BaseMotionPlanner
@@ -222,18 +223,65 @@ class RRTStar(BaseMotionPlanner):
         target_pos: np.ndarray,
         target_quat: np.ndarray,
         dt: float = 0.01,
-        max_iterations: Optional[int] = None
+        max_iterations: Optional[int] = None,
+        max_ik_retries: int = 3
     ) -> Optional[List[np.ndarray]]:
+        """Plan a path to reach a target end-effector pose.
+        
+        Args:
+            target_pos: Target position
+            target_quat: Target orientation (quaternion)
+            dt: Time step for IK solver
+            max_iterations: Maximum RRT iterations
+            max_ik_retries: Number of times to retry IK from different starting configs
+        
+        Returns:
+            Path as list of configurations, or None if planning failed
+        """
         start_config = self.data.qpos[:7].copy()
-        self.ik.update_configuration(self.data.qpos)
-        self.ik.set_target_position(target_pos, target_quat)
         
-        if not self.ik.converge_ik(dt):
-            print("IK failed to converge for target pose")
-            return None
+        # Try IK with progressive fallback strategy
+        for attempt in range(max_ik_retries):
+            if attempt == 0:
+                # First attempt: try from current configuration
+                self.ik.update_configuration(self.data.qpos)
+            else:
+                # Subsequent attempts: move robot partway to a neutral config
+                print(f"  Retrying IK (attempt {attempt + 1}/{max_ik_retries})...")
+                
+                # Use a neutral configuration as fallback (middle of joint ranges)
+                neutral_config = (self.joint_limits_low + self.joint_limits_high) / 2.0
+                
+                # Move progressively toward neutral config
+                alpha = 0.3 * attempt  # Move 30%, 60%, 90% etc.
+                fallback_config = (1 - alpha) * start_config + alpha * neutral_config
+                
+                # Temporarily move the robot in simulation
+                self.data.qpos[:7] = fallback_config
+                mujoco.mj_forward(self.model, self.data)
+                
+                # Update IK configuration
+                self.ik.update_configuration(self.data.qpos)
+            
+            self.ik.set_target_position(target_pos, target_quat)
+            
+            if self.ik.converge_ik(dt):
+                goal_config = self.ik.configuration.q[:7].copy()
+                
+                # Restore original configuration before planning
+                self.data.qpos[:7] = start_config
+                mujoco.mj_forward(self.model, self.data)
+                
+                # Plan from original start to IK solution
+                return self.plan(start_config, goal_config, max_iterations)
         
-        goal_config = self.ik.configuration.q[:7].copy()
-        return self.plan(start_config, goal_config, max_iterations)
+        print(f"  IK failed to converge after {max_ik_retries} attempts")
+        
+        # Restore original configuration
+        self.data.qpos[:7] = start_config
+        mujoco.mj_forward(self.model, self.data)
+        
+        return None
     
     def get_path_cost(self, path: List[np.ndarray]) -> float:
         if len(path) < 2:

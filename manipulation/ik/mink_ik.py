@@ -15,9 +15,9 @@ class MinkIK(BaseIK):
         self.data = data
         self.aux_tasks = []
         self.solver = "quadprog"
-        self.pos_threshold = 0.005
+        self.pos_threshold = 0.006
         self.ori_threshold = 1e-3
-        self.max_iters = 60
+        self.max_iters = 600
         self.ee_task = None
         self.posture_task = None
         self.target_name = target_name
@@ -77,7 +77,9 @@ class MinkIK(BaseIK):
 
             if pos_achieved and ori_achieved:
                 return True
-            
+        print("MINK IK failed to converge within the maximum iterations"
+              f" (pos error: {np.linalg.norm(err[:3]):.6f},"
+              f" ori error: {np.linalg.norm(err[3:]):.6f}))")
         return False
     
     def update_configuration(self, qpos: np.ndarray):

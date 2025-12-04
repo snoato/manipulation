@@ -67,8 +67,9 @@ class GridDomain:
         # Generate cells with centers and bounds
         self.cells = self._generate_cells()
         
-        # Precompute adjacency relationships
+        # Precompute adjacency relationships (both legacy and directional)
         self.adjacency = self._compute_adjacency()
+        self.directional_adjacency = self._compute_directional_adjacency()
     
     def _parse_table_geometry(self) -> Dict[str, float]:
         """
@@ -94,9 +95,13 @@ class GridDomain:
         geom_xpos = self._temp_data.geom_xpos[table_geom_id]
         geom_size = self.model.geom_size[table_geom_id]
         
-        # Center working area on table
+        # Center working area on long axis (X), align to robot-facing edge on short axis (Y)
+        # X: centered on table
         center_x = geom_xpos[0]
-        center_y = geom_xpos[1]
+        # Y: aligned with front edge (robot-facing side)
+        # Front edge is at geom_xpos[1] - geom_size[1], shift grid center towards robot
+        center_y = geom_xpos[1] - geom_size[1] + self.working_area[1] / 2.0
+        
         table_height = geom_xpos[2] + geom_size[2]  # top of table
         
         half_width_x = self.working_area[0] / 2.0
@@ -175,6 +180,43 @@ class GridDomain:
                 adjacency[cell_id] = neighbors
         
         return adjacency
+    
+    def _compute_directional_adjacency(self) -> Dict[str, Dict[str, str]]:
+        """
+        Compute directional adjacency relationships between cells.
+        
+        Returns:
+            Dict mapping each cell to a dict of {direction: neighbor_cell}.
+            Example: {'cell_0_0': {'north': 'cell_0_1', 'east': 'cell_1_0'}, ...}
+            Edge cells will only have valid directions (2-3 directions),
+            corner cells will have exactly 2 directions.
+        """
+        adjacencies = {}
+        
+        for ix in range(self.cells_x):
+            for iy in range(self.cells_y):
+                cell_id = f"cell_{ix}_{iy}"
+                cell_adjacencies = {}
+                
+                # North (increasing y)
+                if iy + 1 < self.cells_y:
+                    cell_adjacencies['north'] = f"cell_{ix}_{iy + 1}"
+                
+                # South (decreasing y)
+                if iy - 1 >= 0:
+                    cell_adjacencies['south'] = f"cell_{ix}_{iy - 1}"
+                
+                # East (increasing x)
+                if ix + 1 < self.cells_x:
+                    cell_adjacencies['east'] = f"cell_{ix + 1}_{iy}"
+                
+                # West (decreasing x)
+                if ix - 1 >= 0:
+                    cell_adjacencies['west'] = f"cell_{ix - 1}_{iy}"
+                
+                adjacencies[cell_id] = cell_adjacencies
+        
+        return adjacencies
     
     def get_cell_at_position(self, x: float, y: float) -> str:
         """

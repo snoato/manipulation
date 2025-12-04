@@ -55,3 +55,5 @@ htmlcov/
 
 # Project specific
 *.mjb
+manipulation/symbolic/problems/*.pddl
+manipulation/symbolic/viz/*.png

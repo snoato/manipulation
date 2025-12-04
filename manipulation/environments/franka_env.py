@@ -176,3 +176,53 @@ class FrankaEnvironment(BaseEnvironment):
     
     def get_dropoff_pose(self):
         return np.array([0.5, 0, 0.5]), np.array([0, 1, 0, 0])
+    
+    def set_object_pose(self, body_name: str, pos: np.ndarray, quat: np.ndarray = None):
+        """
+        Set pose of a free body in the scene.
+        
+        Args:
+            body_name: Name of the body
+            pos: Position [x, y, z]
+            quat: Quaternion [w, x, y, z], defaults to identity
+        """
+        if quat is None:
+            quat = np.array([1, 0, 0, 0])
+        
+        joint_name = f"{body_name}_freejoint"
+        joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        
+        if joint_id >= 0:
+            joint_qposadr = self.model.jnt_qposadr[joint_id]
+            self.data.qpos[joint_qposadr:joint_qposadr+3] = pos
+            self.data.qpos[joint_qposadr+3:joint_qposadr+7] = quat
+            self.data.qvel[self.model.jnt_dofadr[joint_id]:self.model.jnt_dofadr[joint_id]+6] = 0
+    
+    def get_object_pose(self, body_name: str) -> tuple:
+        """
+        Get pose of a body in the scene.
+        
+        Args:
+            body_name: Name of the body
+            
+        Returns:
+            Tuple of (position, quaternion) or (None, None) if not found
+        """
+        joint_name = f"{body_name}_freejoint"
+        joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        
+        if joint_id >= 0:
+            joint_qposadr = self.model.jnt_qposadr[joint_id]
+            pos = self.data.qpos[joint_qposadr:joint_qposadr+3].copy()
+            quat = self.data.qpos[joint_qposadr+3:joint_qposadr+7].copy()
+            return pos, quat
+        
+        return None, None
+    
+    def reset_velocities(self):
+        """Zero out all velocities in the scene."""
+        self.data.qvel[:] = 0
+    
+    def forward(self):
+        """Forward kinematics to update derived quantities."""
+        mujoco.mj_forward(self.model, self.data)

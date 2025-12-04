@@ -9,6 +9,7 @@ Just another wrapper for robotics manipulation built on top of [MuJoCo](https://
 - **Motion Planning**: RRT* motion planner with path smoothing
 - **Robot Control**: Position-based controller with trajectory following
 - **Franka Panda Support**: Pre-configured support for Franka Emika Panda robot
+- **Symbolic Planning**: Grid-based PDDL domain for task planning with multi-cell occupancy
 
 ## Installation
 
@@ -35,6 +36,9 @@ python grasping_ik.py
 
 # Pick and place with RRT* - collision-aware grasping
 python grasping_rrt.py
+
+# Symbolic planning with grid-based PDDL domain
+python symbolic_planning.py
 ```
 
 ## Package Structure
@@ -46,6 +50,7 @@ manipulation/
 ├── ik/                 # IK implementations
 ├── planners/           # Motion planners
 ├── controllers/        # Controllers
+├── symbolic/           # Symbolic planning (PDDL)
 └── utils/              # Utilities
 ```
 

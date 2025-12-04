@@ -1,5 +1,7 @@
 """Visualization utilities for symbolic planning."""
 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for mjpython compatibility
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -40,8 +42,20 @@ def visualize_grid_state(state_manager: StateManager,
         )
         ax.add_patch(rect)
     
-    # Color map for cylinders (cycling through 10 colors)
-    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    # Color map matching MuJoCo materials (cyl_mat_0 through cyl_mat_9)
+    # These colors match the rgba values in scene_symbolic.xml
+    colors = [
+        (1.0, 0.2, 0.2),  # cyl_mat_0: red
+        (0.2, 1.0, 0.2),  # cyl_mat_1: green
+        (0.2, 0.2, 1.0),  # cyl_mat_2: blue
+        (1.0, 1.0, 0.2),  # cyl_mat_3: yellow
+        (1.0, 0.2, 1.0),  # cyl_mat_4: magenta
+        (0.2, 1.0, 1.0),  # cyl_mat_5: cyan
+        (1.0, 0.5, 0.2),  # cyl_mat_6: orange
+        (0.5, 0.2, 1.0),  # cyl_mat_7: purple
+        (0.2, 1.0, 0.5),  # cyl_mat_8: light green
+        (1.0, 0.8, 0.4),  # cyl_mat_9: gold
+    ]
     
     # Draw occupied cells and cylinders
     drawn_cylinders = set()
@@ -53,6 +67,8 @@ def visualize_grid_state(state_manager: StateManager,
         
         # Shade occupied cells
         for cell_name in occupied_cells:
+            if cell_name is None or cell_name not in grid.cells:
+                continue  # Skip cells outside grid bounds
             cell_data = grid.cells[cell_name]
             bounds = cell_data['bounds']
             width = bounds[1] - bounds[0]
@@ -87,17 +103,17 @@ def visualize_grid_state(state_manager: StateManager,
             drawn_cylinders.add(cyl_name)
     
     # Set axis properties
-    min_x, max_x, min_y, max_y = grid.grid_bounds
-    ax.set_xlim(min_x - 0.01, max_x + 0.01)
-    ax.set_ylim(min_y - 0.01, max_y + 0.01)
+    bounds = grid.table_bounds
+    ax.set_xlim(bounds['min_x'] - 0.01, bounds['max_x'] + 0.01)
+    ax.set_ylim(bounds['min_y'] - 0.01, bounds['max_y'] + 0.01)
     ax.set_aspect('equal')
     ax.set_xlabel('X (m)', fontsize=12)
     ax.set_ylabel('Y (m)', fontsize=12)
     ax.set_title(title, fontsize=14)
-    ax.grid(True, alpha=0.3)
+    ax.grid(False)
     
     # Add info text
-    info_text = f"Grid: {grid.grid_width}×{grid.grid_height} cells ({grid.cell_size*100:.1f}cm)\n"
+    info_text = f"Grid: {grid.cells_x}×{grid.cells_y} cells ({grid.cell_size*100:.1f}cm)\n"
     info_text += f"Cylinders: {len(state['cylinders'])}\n"
     info_text += f"Gripper: {'empty' if state['gripper_empty'] else f'holding {state['holding']}'}"
     ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
@@ -109,101 +125,6 @@ def visualize_grid_state(state_manager: StateManager,
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Saved visualization to {save_path}")
-    
-    return fig, ax
-
-
-def create_grid_overlay_geoms(grid: GridDomain) -> str:
-    """
-    Generate XML snippet for grid overlay in MuJoCo.
-    
-    Args:
-        grid: GridDomain instance
-        
-    Returns:
-        XML string with grid line geoms
-    """
-    min_x, max_x, min_y, max_y = grid.grid_bounds
-    
-    xml_lines = []
-    xml_lines.append("<!-- Grid overlay (visual only) -->")
-    
-    # Vertical lines
-    for i in range(grid.grid_width + 1):
-        x = min_x + i * grid.cell_size
-        y_center = (min_y + max_y) / 2
-        half_height = (max_y - min_y) / 2
-        
-        xml_lines.append(
-            f'<geom name="grid_v_{i}" type="box" '
-            f'pos="{x} {y_center} {grid.table_height + 0.001}" '
-            f'size="0.0005 {half_height} 0.0001" '
-            f'rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>'
-        )
-    
-    # Horizontal lines
-    for j in range(grid.grid_height + 1):
-        y = min_y + j * grid.cell_size
-        x_center = (min_x + max_x) / 2
-        half_width = (max_x - min_x) / 2
-        
-        xml_lines.append(
-            f'<geom name="grid_h_{j}" type="box" '
-            f'pos="{x_center} {y} {grid.table_height + 0.001}" '
-            f'size="{half_width} 0.0005 0.0001" '
-            f'rgba="0.3 0.3 0.3 0.5" contype="0" conaffinity="0"/>'
-        )
-    
-    return "\n    ".join(xml_lines)
-
-
-def plot_grid_heatmap(state_manager: StateManager,
-                      save_path: Optional[str] = None,
-                      title: str = "Grid Occupancy Heatmap",
-                      figsize: tuple = (12, 10)):
-    """
-    Plot grid as heatmap showing occupancy density.
-    
-    Args:
-        state_manager: StateManager instance
-        save_path: Optional path to save figure
-        title: Figure title
-        figsize: Figure size
-    """
-    grid = state_manager.grid
-    state = state_manager.ground_state()
-    
-    # Create occupancy matrix
-    occupancy = np.zeros((grid.grid_height, grid.grid_width))
-    
-    for cyl_name, occupied_cells in state['cylinders'].items():
-        for cell_name in occupied_cells:
-            cell_data = grid.cells[cell_name]
-            i, j = cell_data['index']
-            occupancy[j, i] += 1  # Note: matrix is row-major, so y is first index
-    
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    im = ax.imshow(occupancy, cmap='Reds', origin='lower', aspect='auto',
-                   extent=[0, grid.grid_width, 0, grid.grid_height])
-    
-    ax.set_xlabel('X cell index', fontsize=12)
-    ax.set_ylabel('Y cell index', fontsize=12)
-    ax.set_title(title, fontsize=14)
-    
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('Number of cylinders', fontsize=10)
-    
-    # Add grid
-    ax.set_xticks(np.arange(0, grid.grid_width, max(1, grid.grid_width // 10)))
-    ax.set_yticks(np.arange(0, grid.grid_height, max(1, grid.grid_height // 10)))
-    ax.grid(True, alpha=0.3, color='white', linewidth=0.5)
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved heatmap to {save_path}")
+        plt.close(fig)
     
     return fig, ax

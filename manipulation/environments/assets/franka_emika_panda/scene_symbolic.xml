@@ -73,105 +73,105 @@
     <body name="cylinder_0" pos="100 0 0.1">
       <joint name="cylinder_0_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_0_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_0" 
+      <geom name="cylinder_0_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_0" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_1" pos="100 0 0.1">
       <joint name="cylinder_1_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_1_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_1" 
+      <geom name="cylinder_1_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_1" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_2" pos="100 0 0.1">
       <joint name="cylinder_2_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_2_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_2" 
+      <geom name="cylinder_2_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_2" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_3" pos="100 0 0.1">
       <joint name="cylinder_3_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_3_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_3" 
+      <geom name="cylinder_3_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_3" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_4" pos="100 0 0.1">
       <joint name="cylinder_4_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_4_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_4" 
+      <geom name="cylinder_4_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_4" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_5" pos="100 0 0.1">
       <joint name="cylinder_5_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_5_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_5" 
+      <geom name="cylinder_5_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_5" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_6" pos="100 0 0.1">
       <joint name="cylinder_6_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_6_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_6" 
+      <geom name="cylinder_6_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_6" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_7" pos="100 0 0.1">
       <joint name="cylinder_7_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_7_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_7" 
+      <geom name="cylinder_7_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_7" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_8" pos="100 0 0.1">
       <joint name="cylinder_8_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_8_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_8" 
+      <geom name="cylinder_8_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_8" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_9" pos="100 0 0.1">
       <joint name="cylinder_9_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_9_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_9" 
+      <geom name="cylinder_9_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_9" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_10" pos="100 0 0.1">
       <joint name="cylinder_10_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_10_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_0" 
+      <geom name="cylinder_10_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_0" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_11" pos="100 0 0.1">
       <joint name="cylinder_11_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_11_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_1" 
+      <geom name="cylinder_11_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_1" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_12" pos="100 0 0.1">
       <joint name="cylinder_12_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_12_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_2" 
+      <geom name="cylinder_12_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_2" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_13" pos="100 0 0.1">
       <joint name="cylinder_13_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_13_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_3" 
+      <geom name="cylinder_13_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_3" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_14" pos="100 0 0.1">
       <joint name="cylinder_14_freejoint" type="free"/>
       <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
-      <geom name="cylinder_14_geom" type="cylinder" size="0.015 0.10" material="cyl_mat_4" 
+      <geom name="cylinder_14_geom" type="cylinder" size="0.0125 0.08" material="cyl_mat_4" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
 
@@ -179,70 +179,70 @@
     <body name="cylinder_15" pos="100 0 0.12">
       <joint name="cylinder_15_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_15_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_5" 
+      <geom name="cylinder_15_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_5" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_16" pos="100 0 0.12">
       <joint name="cylinder_16_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_16_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_6" 
+      <geom name="cylinder_16_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_6" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_17" pos="100 0 0.12">
       <joint name="cylinder_17_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_17_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_7" 
+      <geom name="cylinder_17_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_7" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_18" pos="100 0 0.12">
       <joint name="cylinder_18_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_18_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_8" 
+      <geom name="cylinder_18_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_8" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_19" pos="100 0 0.12">
       <joint name="cylinder_19_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_19_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_9" 
+      <geom name="cylinder_19_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_9" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_20" pos="100 0 0.12">
       <joint name="cylinder_20_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_20_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_0" 
+      <geom name="cylinder_20_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_0" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_21" pos="100 0 0.12">
       <joint name="cylinder_21_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_21_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_1" 
+      <geom name="cylinder_21_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_1" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_22" pos="100 0 0.12">
       <joint name="cylinder_22_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_22_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_2" 
+      <geom name="cylinder_22_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_2" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_23" pos="100 0 0.12">
       <joint name="cylinder_23_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_23_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_3" 
+      <geom name="cylinder_23_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_3" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_24" pos="100 0 0.12">
       <joint name="cylinder_24_freejoint" type="free"/>
       <inertial mass="0.06" pos="0 0 0" diaginertia="0.0300 0.0300 0.0180"/>
-      <geom name="cylinder_24_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_4" 
+      <geom name="cylinder_24_geom" type="cylinder" size="0.0175 0.10" material="cyl_mat_4" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
 
@@ -250,35 +250,35 @@
     <body name="cylinder_25" pos="100 0 0.16">
       <joint name="cylinder_25_freejoint" type="free"/>
       <inertial mass="0.08" pos="0 0 0" diaginertia="0.0500 0.0500 0.0320"/>
-      <geom name="cylinder_25_geom" type="cylinder" size="0.025 0.16" material="cyl_mat_5" 
+      <geom name="cylinder_25_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_5" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_26" pos="100 0 0.16">
       <joint name="cylinder_26_freejoint" type="free"/>
       <inertial mass="0.08" pos="0 0 0" diaginertia="0.0500 0.0500 0.0320"/>
-      <geom name="cylinder_26_geom" type="cylinder" size="0.025 0.16" material="cyl_mat_6" 
+      <geom name="cylinder_26_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_6" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_27" pos="100 0 0.16">
       <joint name="cylinder_27_freejoint" type="free"/>
       <inertial mass="0.08" pos="0 0 0" diaginertia="0.0500 0.0500 0.0320"/>
-      <geom name="cylinder_27_geom" type="cylinder" size="0.025 0.16" material="cyl_mat_7" 
+      <geom name="cylinder_27_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_7" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_28" pos="100 0 0.16">
       <joint name="cylinder_28_freejoint" type="free"/>
       <inertial mass="0.08" pos="0 0 0" diaginertia="0.0500 0.0500 0.0320"/>
-      <geom name="cylinder_28_geom" type="cylinder" size="0.025 0.16" material="cyl_mat_8" 
+      <geom name="cylinder_28_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_8" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
     
     <body name="cylinder_29" pos="100 0 0.16">
       <joint name="cylinder_29_freejoint" type="free"/>
       <inertial mass="0.08" pos="0 0 0" diaginertia="0.0500 0.0500 0.0320"/>
-      <geom name="cylinder_29_geom" type="cylinder" size="0.025 0.16" material="cyl_mat_9" 
+      <geom name="cylinder_29_geom" type="cylinder" size="0.020 0.12" material="cyl_mat_9" 
             solimp="0.99 0.99 0.01" solref="0.02 1"/>
     </body>
   </worldbody>
