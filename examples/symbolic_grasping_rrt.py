@@ -9,7 +9,7 @@ from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
 
 _HERE = Path(__file__).parent
 _XML = _HERE / ".." / "manipulation" / "environments" / "assets" / "franka_emika_panda" / "scene_symbolic.xml"
-_PROBLEM_DIR = _HERE / ".." / "manipulation" / "symbolic" / "problems"
+_PROBLEM_DIR = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "problems"
 _VIZ_DIR = _HERE / ".." / "manipulation" / "symbolic" / "viz"
 
 

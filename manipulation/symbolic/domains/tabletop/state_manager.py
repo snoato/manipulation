@@ -1,4 +1,4 @@
-"""State management for symbolic planning - grounding, initialization, and sampling."""
+"""State management for tabletop symbolic planning - grounding, initialization, and sampling."""
 
 import mujoco
 import numpy as np
@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 import re
 
-from manipulation.symbolic.grid_domain import GridDomain
+from manipulation.symbolic.base_domain import BaseStateManager
+from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
 
 
 def extract_grid_dimensions_from_pddl(pddl_content: str) -> Tuple[int, int]:
@@ -36,8 +37,8 @@ def extract_grid_dimensions_from_pddl(pddl_content: str) -> Tuple[int, int]:
     return (max_x + 1, max_y + 1)
 
 
-class StateManager:
-    """Manages state grounding, initialization, and randomization for symbolic planning."""
+class StateManager(BaseStateManager):
+    """Manages state grounding, initialization, and randomization for tabletop symbolic planning."""
     
     # Cylinder specifications: (radius, height) indexed by cylinder number
     CYLINDER_SPECS = {

@@ -1,4 +1,4 @@
-"""Visualization utilities for symbolic planning."""
+"""Visualization utilities for tabletop symbolic planning."""
 
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for mjpython compatibility
@@ -8,8 +8,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict
 
-from manipulation.symbolic.grid_domain import GridDomain
-from manipulation.symbolic.state_manager import StateManager
+from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
+from manipulation.symbolic.domains.tabletop.state_manager import StateManager
 
 
 def visualize_grid_state(state_manager: StateManager, 

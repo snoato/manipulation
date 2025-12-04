@@ -1,5 +1,5 @@
 """
-Grid-based spatial discretization for symbolic planning.
+Grid-based spatial discretization for tabletop manipulation.
 
 This module provides the GridDomain class that discretizes a tabletop workspace
 into a uniform grid of cells for PDDL-based symbolic planning.
@@ -9,23 +9,25 @@ import numpy as np
 from typing import Dict, List, Set, Tuple
 import mujoco
 
+from manipulation.symbolic.base_domain import BaseDomain
 
-class GridDomain:
+
+class GridDomain(BaseDomain):
     """
     Discretizes a continuous tabletop workspace into a uniform grid.
     
     The grid provides a symbolic abstraction of space for PDDL planning,
-    with 1cm cell resolution and 4-way adjacency connectivity.
+    with configurable cell resolution and 4-way adjacency connectivity.
     
     Attributes:
         model: MuJoCo model containing the table geometry
-        cells_x: Number of cells in x-direction (typically 40)
-        cells_y: Number of cells in y-direction (typically 40)
-        cell_size: Size of each cell in meters (0.01m = 1cm)
+        cells_x: Number of cells in x-direction
+        cells_y: Number of cells in y-direction
+        cell_size: Size of each cell in meters
         table_bounds: Dict with min_x, max_x, min_y, max_y of working area
-        cell_centers: Dict mapping cell IDs to (x, y) center coordinates
-        cell_bounds: Dict mapping cell IDs to (min_x, max_x, min_y, max_y)
+        cells: Dict mapping cell IDs to center and bounds
         adjacency: Dict mapping cell IDs to set of adjacent cell IDs
+        directional_adjacency: Dict mapping cells to directional neighbors
     """
     
     def __init__(
@@ -218,6 +220,51 @@ class GridDomain:
         
         return adjacencies
     
+    # Implement BaseDomain interface
+    
+    def get_domain_info(self) -> Dict:
+        """
+        Get comprehensive information about the grid configuration.
+        
+        Returns:
+            Dictionary containing grid dimensions, cell size, working area, etc.
+        """
+        return {
+            'grid_dimensions': (self.cells_x, self.cells_y),
+            'total_cells': self.cells_x * self.cells_y,
+            'cell_size': self.cell_size,
+            'working_area': self.working_area,
+            'table_height': self.table_bounds['table_height'],
+            'table_bounds': self.table_bounds
+        }
+    
+    def get_location_at_position(self, x: float, y: float) -> str:
+        """
+        Get the cell ID containing a given (x, y) position.
+        
+        Args:
+            x: X coordinate in meters
+            y: Y coordinate in meters
+        
+        Returns:
+            Cell ID string (e.g., 'cell_20_20'), or None if out of bounds
+        """
+        return self.get_cell_at_position(x, y)
+    
+    def get_location_center(self, location_id: str) -> Tuple[float, float]:
+        """
+        Get the (x, y) center coordinates of a cell.
+        
+        Args:
+            location_id: Cell ID string (e.g., 'cell_20_20')
+        
+        Returns:
+            Tuple of (x, y) coordinates in meters
+        """
+        return self.get_cell_center(location_id)
+    
+    # Legacy methods for backward compatibility
+    
     def get_cell_at_position(self, x: float, y: float) -> str:
         """
         Get the cell ID containing a given (x, y) position.
@@ -269,18 +316,5 @@ class GridDomain:
         return self.cells[cell_id]['bounds']
     
     def get_grid_info(self) -> Dict:
-        """
-        Get comprehensive information about the grid configuration.
-        
-        Returns:
-            Dictionary containing grid dimensions, cell size, working area, etc.
-        """
-        return {
-            'grid_dimensions': (self.cells_x, self.cells_y),
-            'total_cells': self.cells_x * self.cells_y,
-            'cell_size': self.cell_size,
-            'working_area': self.working_area,
-            'table_height': self.table_bounds['table_height'],
-            'table_bounds': self.table_bounds
-        }
-    
+        """Alias for get_domain_info() for backward compatibility."""
+        return self.get_domain_info()
