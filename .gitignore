@@ -58,3 +58,4 @@ htmlcov/
 manipulation/symbolic/problems/*.pddl
 manipulation/symbolic/viz/*.png
 manipulation/symbolic/domains/tabletop/pddl/problems/*.pddl
+examples/grasp_captures/*.png

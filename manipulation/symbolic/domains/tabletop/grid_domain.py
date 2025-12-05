@@ -28,6 +28,8 @@ class GridDomain(BaseDomain):
         cells_x: Number of cells in x-direction
         cells_y: Number of cells in y-direction
         cell_size: Size of each cell in meters
+        grid_offset_x: Grid offset in x-direction (meters)
+        grid_offset_y: Grid offset in y-direction (meters)
         table_bounds: Dict with min_x, max_x, min_y, max_y of working area
         cells: Dict mapping cell IDs to center and bounds
         adjacency: Dict mapping cell IDs to set of adjacent cell IDs
@@ -39,6 +41,8 @@ class GridDomain(BaseDomain):
         model: mujoco.MjModel,
         cell_size: float = 0.01,
         working_area: Tuple[float, float] = (0.4, 0.4),
+        grid_offset_x: float = 0.0,
+        grid_offset_y: float = 0.0,
         table_body_name: str = "simple_table",
         table_geom_name: str = "table_surface"
     ):
@@ -49,12 +53,18 @@ class GridDomain(BaseDomain):
             model: MuJoCo model containing table geometry
             cell_size: Size of each grid cell in meters (default 0.01 = 1cm)
             working_area: (width_x, width_y) of working area in meters
+            grid_offset_x: Offset in x-direction in meters (default 0.0).
+                          Positive values shift grid right, negative shift left.
+            grid_offset_y: Offset in y-direction in meters (default 0.0).
+                          Positive values shift grid away from robot, negative toward robot.
             table_body_name: Name of the table body in MuJoCo model
             table_geom_name: Name of the table surface geom
         """
         self.model = model
         self.cell_size = cell_size
         self.working_area = working_area
+        self.grid_offset_x = grid_offset_x
+        self.grid_offset_y = grid_offset_y
         self.table_body_name = table_body_name
         self.table_geom_name = table_geom_name
         
@@ -102,11 +112,11 @@ class GridDomain(BaseDomain):
         geom_size = self.model.geom_size[table_geom_id]
         
         # Center working area on long axis (X), align to robot-facing edge on short axis (Y)
-        # X: centered on table
-        center_x = geom_xpos[0]
-        # Y: aligned with front edge (robot-facing side)
+        # X: centered on table, then apply offset
+        center_x = geom_xpos[0] + self.grid_offset_x
+        # Y: aligned with front edge (robot-facing side), then apply offset
         # Front edge is at geom_xpos[1] - geom_size[1], shift grid center towards robot
-        center_y = geom_xpos[1] - geom_size[1] + self.working_area[1] / 2.0
+        center_y = geom_xpos[1] - geom_size[1] + self.working_area[1] / 2.0 + self.grid_offset_y
         
         table_height = geom_xpos[2] + geom_size[2]  # top of table
         
@@ -238,6 +248,8 @@ class GridDomain(BaseDomain):
             'total_cells': self.cells_x * self.cells_y,
             'cell_size': self.cell_size,
             'working_area': self.working_area,
+            'grid_offset_x': self.grid_offset_x,
+            'grid_offset_y': self.grid_offset_y,
             'table_height': self.table_bounds['table_height'],
             'table_bounds': self.table_bounds
         }
