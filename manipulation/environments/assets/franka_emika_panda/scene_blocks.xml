@@ -1,0 +1,195 @@
+<mujoco model="panda blocks world scene">
+  <include file="base_panda.xml"/>
+
+  <statistic center="0.3 0 0.4" extent="1"/>
+
+  <option timestep="0.005" iterations="5" ls_iterations="8" integrator="implicitfast">
+    <flag eulerdamp="disable"/>
+  </option>
+
+  <custom>
+    <numeric data="12" name="max_contact_points"/>
+  </custom>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+    <scale contactwidth="0.075" contactheight="0.025" forcewidth="0.05" com="0.05" framewidth="0.01" framelength="0.2"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- 10 distinct block materials cycling through colors -->
+    <material name="block_mat_0" rgba="1.0 0.2 0.2 1"/>
+    <material name="block_mat_1" rgba="0.2 1.0 0.2 1"/>
+    <material name="block_mat_2" rgba="0.2 0.2 1.0 1"/>
+    <material name="block_mat_3" rgba="1.0 1.0 0.2 1"/>
+    <material name="block_mat_4" rgba="1.0 0.2 1.0 1"/>
+    <material name="block_mat_5" rgba="0.2 1.0 1.0 1"/>
+    <material name="block_mat_6" rgba="1.0 0.5 0.2 1"/>
+    <material name="block_mat_7" rgba="0.5 0.2 1.0 1"/>
+    <material name="block_mat_8" rgba="0.2 1.0 0.5 1"/>
+    <material name="block_mat_9" rgba="1.0 0.8 0.4 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    
+    <!-- Cameras for RGB-D capture -->
+    <camera name="top_camera" pos="0.4 0.4 1.5" xyaxes="1 0 0 0 1 0" fovy="60"/>
+    <camera name="side_camera" pos="1.6 0.55 0.8" euler="0 1.07 1.57" fovy="55"/>
+    <camera name="front_camera" pos="0.4 -0.4 0.7" xyaxes="1 0 0 0 0.4 0.8" fovy="60"/>
+    
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" contype="1"/>
+
+    <body name="target" pos="0.5 0 .5" quat="0 1 0 0" mocap="true"> 
+      <geom type="box" size=".05 .05 .05" contype="0" conaffinity="0" rgba=".6 .3 .3 .2"/>
+    </body>
+
+    <body name="simple_table" pos="0 0.4 0" quat="0 0 0 1">
+      <joint name="table_joint" type="free"/>
+
+      <!-- tabletop -->
+      <geom name="table_surface" type="box" size="0.8 0.4 0.02" pos="-0.4 -0.2 0.25"
+            rgba="0.55 0.55 0.55 1"/>
+
+      <!-- legs -->
+      <geom type="box" size="0.015 0.015 0.12" pos=" 0.38  0.18 0.12"
+            rgba="0.3 0.3 0.3 1"/>
+      <geom type="box" size="0.015 0.015 0.12" pos="-1.18  0.18 0.12"
+            rgba="0.3 0.3 0.3 1"/>
+      <geom type="box" size="0.015 0.015 0.12" pos=" 0.38 -0.58 0.12"
+            rgba="0.3 0.3 0.3 1"/>
+      <geom type="box" size="0.015 0.015 0.12" pos="-1.18 -0.58 0.12"
+            rgba="0.3 0.3 0.3 1"/>
+
+      <!-- picking sites -->
+      <site name="site_right" pos="-0.20 0 0.25" size="0.005"
+            rgba="1 0 0 1"  type="sphere" euler="-1.57 1.57 0"/>
+      <site name="site_left"  pos=" 0.20 0 0.25" size="0.005"
+            rgba="0 1 0 1"  type="sphere" euler="-1.57 -1.57 0"/>
+    </body>
+
+    <!-- 6 small cubes (4cm x 4cm x 4cm) - blocks 0-5 -->
+    <body name="block_0" pos="100 0 0.02">
+      <joint name="block_0_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_0_geom" type="box" size="0.02 0.02 0.02" material="block_mat_0" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_1" pos="100 0 0.02">
+      <joint name="block_1_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_1_geom" type="box" size="0.02 0.02 0.02" material="block_mat_1" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_2" pos="100 0 0.02">
+      <joint name="block_2_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_2_geom" type="box" size="0.02 0.02 0.02" material="block_mat_2" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_3" pos="100 0 0.02">
+      <joint name="block_3_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_3_geom" type="box" size="0.02 0.02 0.02" material="block_mat_3" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_4" pos="100 0 0.02">
+      <joint name="block_4_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_4_geom" type="box" size="0.02 0.02 0.02" material="block_mat_4" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_5" pos="100 0 0.02">
+      <joint name="block_5_freejoint" type="free"/>
+      <inertial mass="0.064" pos="0 0 0" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom name="block_5_geom" type="box" size="0.02 0.02 0.02" material="block_mat_5" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+
+    <!-- 6 medium cubes (6cm x 6cm x 6cm) - blocks 6-11 -->
+    <body name="block_6" pos="100 0 0.03">
+      <joint name="block_6_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_6_geom" type="box" size="0.03 0.03 0.03" material="block_mat_6" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_7" pos="100 0 0.03">
+      <joint name="block_7_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_7_geom" type="box" size="0.03 0.03 0.03" material="block_mat_7" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_8" pos="100 0 0.03">
+      <joint name="block_8_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_8_geom" type="box" size="0.03 0.03 0.03" material="block_mat_8" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_9" pos="100 0 0.03">
+      <joint name="block_9_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_9_geom" type="box" size="0.03 0.03 0.03" material="block_mat_9" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_10" pos="100 0 0.03">
+      <joint name="block_10_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_10_geom" type="box" size="0.03 0.03 0.03" material="block_mat_0" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_11" pos="100 0 0.03">
+      <joint name="block_11_freejoint" type="free"/>
+      <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+      <geom name="block_11_geom" type="box" size="0.03 0.03 0.03" material="block_mat_1" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+
+    <!-- 2 platform cuboids (10cm x 10cm x 5cm) - blocks 12-13 -->
+    <body name="block_12" pos="100 0 0.025">
+      <joint name="block_12_freejoint" type="free"/>
+      <inertial mass="0.500" pos="0 0 0" diaginertia="0.0015 0.0015 0.0017"/>
+      <geom name="block_12_geom" type="box" size="0.05 0.05 0.025" material="block_mat_2" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_13" pos="100 0 0.025">
+      <joint name="block_13_freejoint" type="free"/>
+      <inertial mass="0.500" pos="0 0 0" diaginertia="0.0015 0.0015 0.0017"/>
+      <geom name="block_13_geom" type="box" size="0.05 0.05 0.025" material="block_mat_3" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+
+    <!-- 2 large platform cuboids (15cm x 10cm x 5cm) - blocks 14-15 -->
+    <body name="block_14" pos="100 0 0.025">
+      <joint name="block_14_freejoint" type="free"/>
+      <inertial mass="0.750" pos="0 0 0" diaginertia="0.0020 0.0028 0.0025"/>
+      <geom name="block_14_geom" type="box" size="0.075 0.05 0.025" material="block_mat_4" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+    
+    <body name="block_15" pos="100 0 0.025">
+      <joint name="block_15_freejoint" type="free"/>
+      <inertial mass="0.750" pos="0 0 0" diaginertia="0.0020 0.0028 0.0025"/>
+      <geom name="block_15_geom" type="box" size="0.075 0.05 0.025" material="block_mat_5" 
+            solimp="0.99 0.99 0.01" solref="0.02 1"/>
+    </body>
+
+  </worldbody>
+</mujoco>
