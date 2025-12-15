@@ -120,7 +120,47 @@ class StateManager(BaseStateManager):
         
         return state
     
-    def generate_pddl_problem(self, problem_name: str, output_path: Optional[str] = None) -> str:
+    def set_from_grounded_state(self, state: Dict[str, any]):
+        """
+        Set MuJoCo state from grounded symbolic representation.
+        
+        Takes the same dictionary format as returned by ground_state() and
+        configures the MuJoCo simulation accordingly.
+        
+        Args:
+            state: Dictionary with 'cylinders', 'gripper_empty', and 'holding' keys
+        """
+        # Hide all cylinders first
+        for cyl_idx in range(30):
+            self._hide_cylinder(cyl_idx)
+        
+        # Place cylinders at the centroid of their occupied cells
+        for cyl_name, cells in state.get('cylinders', {}).items():
+            # Extract cylinder index
+            cyl_idx = int(cyl_name.split('_')[1])
+            
+            # Compute centroid of occupied cells
+            cell_centers = [self.grid.cells[cell]['center'] for cell in cells]
+            centroid_x = np.mean([c[0] for c in cell_centers])
+            centroid_y = np.mean([c[1] for c in cell_centers])
+            
+            # Get cylinder height - position center slightly above table to avoid initial contact
+            _, height = self.CYLINDER_SPECS[cyl_idx]
+            centroid_z = self.grid.table_height + height / 2.0 + 0.003  # 0.3cm clearance
+            
+            # Set cylinder position
+            self._set_cylinder_position(cyl_idx, centroid_x, centroid_y, centroid_z)
+        
+        # Update gripper holding state
+        self.gripper_holding = state.get('holding', None)
+
+        self.env.data.qpos[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
+        self.env.data.ctrl[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
+        
+        # Zero out all velocities to prevent wobbling
+        self.env.reset_velocities()
+    
+    def generate_pddl_problem(self, problem_name: str, output_path: Optional[str] = None, goal_string: Optional[str] = "") -> str:
         """
         Generate PDDL problem file from current state.
         
@@ -189,6 +229,7 @@ class StateManager(BaseStateManager):
   
   (:goal (and
     ; Define goal here
+    {goal_string}
   ))
 )
 """
