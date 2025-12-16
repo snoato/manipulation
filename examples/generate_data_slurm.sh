@@ -18,10 +18,10 @@
 # =============================================================================
 
 # Project paths
-PROJECT_ROOT="/work/rleap1/daniel.swoboda/projects/rgnet"  # Update this to your project path
+PROJECT_ROOT="/work/rleap1/daniel.swoboda/projects/manipulation"  # Update this to your project path
 
 # Output configuration
-OUTPUT_DIR="${PROJECT_ROOT}/data/manipulation_dataset"  # Directory to save generated data
+OUTPUT_DIR="/work/rleap1/daniel.swoboda/projects/rgnet/data/manipulation_dataset"  # Directory to save generated data
 NUM_EXAMPLES=1000
 
 # Object configuration
