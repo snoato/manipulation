@@ -22,14 +22,6 @@ def main():
         # Get IK solver
         ik = env.get_ik()
         
-        # Get initial end-effector pose
-        env.move_mocap_to_frame("target", "attachment_site", "site")
-        initial_position = env.data.mocap_pos[0].copy()
-        initial_orientation = env.data.mocap_quat[0].copy()
-        
-        print(f"\nInitial position: {initial_position}")
-        print(f"Initial orientation: {initial_orientation}")
-        
         # Define target pose
         target_position = np.array([0.695, 0.000, 0.621])
         target_orientation = np.array([0.001, 0.835, 0.002, 0.550])
@@ -37,39 +29,31 @@ def main():
         print(f"\nTarget position: {target_position}")
         print(f"Target orientation: {target_orientation}")
         
-        # Update mocap target
-        env.data.mocap_pos[0] = target_position
-        env.data.mocap_quat[0] = target_orientation
+        # Set IK target
+        ik.set_target_position(target_position, target_orientation)
         
         print("\nMoving to target pose...")
         
-        # Main control loop
-        while viewer.is_running():
-            dt = env.step()
+        # Solve IK
+        dt = env.rate.dt
+        converged = ik.converge_ik(dt)
+        
+        if converged:
+            print("IK converged successfully!")
             
-            # Update IK target from mocap body
-            ik.set_target_from_mocap("target")
+            # Apply joint positions and hold
+            target_q = ik.configuration.q[:8].copy()
             
-            # Solve IK
-            converged = ik.converge_ik(dt)
+            while viewer.is_running():
+                env.step()
+                env.data.ctrl[:8] = target_q
+        else:
+            print("IK failed to converge!")
+            print("Close the viewer window to exit.")
             
-            # Apply joint positions
-            env.data.ctrl[:8] = ik.configuration.q[:8]
-            
-            if converged:
-                print("Target reached!")
-                
-                # Hold position for a bit
-                for _ in range(int(2.0 / env.rate_limiter.dt)):
-                    env.step()
-                    env.data.ctrl[:8] = ik.configuration.q[:8]
-                
-                print("Close the viewer window to exit.")
-                
-                # Keep holding position
-                while viewer.is_running():
-                    env.step()
-                    env.data.ctrl[:8] = ik.configuration.q[:8]
+            # Keep current position
+            while viewer.is_running():
+                env.step()
 
 
 if __name__ == "__main__":
