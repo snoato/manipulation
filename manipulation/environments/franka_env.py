@@ -1,6 +1,5 @@
 """Franka Panda robot environment implementation."""
 
-import cv2
 import mujoco
 try:
     import mujoco.viewer
@@ -46,11 +45,6 @@ class FrankaEnvironment(BaseEnvironment):
         self.rate = RateLimiter(frequency=rate, warn=False)
         self.sim_time = 0.0
         self.viewer = None
-        
-        # Camera rendering
-        self.renderer = None
-        self._camera_width = 640
-        self._camera_height = 480
 
     def get_model(self):
         return self.model
@@ -237,203 +231,10 @@ class FrankaEnvironment(BaseEnvironment):
         """Forward kinematics to update derived quantities."""
         mujoco.mj_forward(self.model, self.data)
     
-    def _ensure_renderer(self, width: Optional[int] = None, height: Optional[int] = None):
-        """
-        Lazy initialize renderer with specified dimensions.
-        
-        Args:
-            width: Image width in pixels (uses default if None)
-            height: Image height in pixels (uses default if None)
-        """
-        if width is not None:
-            self._camera_width = width
-        if height is not None:
-            self._camera_height = height
-        
-        if self.renderer is None:
-            self.renderer = mujoco.Renderer(
-                self.model,
-                height=self._camera_height,
-                width=self._camera_width
-            )
-    
-    def _get_camera_intrinsics(self, camera_name: str, width: int, height: int) -> Tuple[float, float, float, float]:
-        """
-        Calculate camera intrinsic parameters for pixel-to-3D projection.
-        
-        Args:
-            camera_name: Name of the camera
-            width: Image width in pixels
-            height: Image height in pixels
-            
-        Returns:
-            Tuple of (fx, fy, cx, cy) where fx, fy are focal lengths and cx, cy is principal point
-        """
-        camera_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
-        if camera_id == -1:
-            raise ValueError(f"Camera '{camera_name}' not found in the model.")
-        
-        fovy_rad = np.deg2rad(self.model.cam_fovy[camera_id])
-        
-        # Calculate focal length in pixels from field of view
-        fy = height / (2.0 * np.tan(fovy_rad / 2.0))
-        fx = fy  # Assuming square pixels (aspect ratio 1:1)
-        
-        # Principal point at image center
-        cx = width / 2.0
-        cy = height / 2.0
-        
-        return fx, fy, cx, cy
-    
-    def render_camera(self, camera_name: str, width: int = 640, height: int = 480) -> np.ndarray:
-        """
-        Capture RGB image from specified camera.
-        
-        Args:
-            camera_name: Name of the camera to render from
-            width: Image width in pixels
-            height: Image height in pixels
-            
-        Returns:
-            RGB image as numpy array with shape (height, width, 3) and dtype uint8
-        """
-        self._ensure_renderer(width, height)
-        
-        # Disable depth rendering to get RGB
-        self.renderer.disable_depth_rendering()
-        
-        # Update scene and render
-        self.renderer.update_scene(self.data, camera=camera_name)
-        rgb = self.renderer.render()
-        
-        return rgb
-    
-    def render_depth(self, camera_name: str, width: int = 640, height: int = 480) -> np.ndarray:
-        """
-        Capture depth image from specified camera.
-        
-        Args:
-            camera_name: Name of the camera to render from
-            width: Image width in pixels
-            height: Image height in pixels
-            
-        Returns:
-            Depth image as numpy array with shape (height, width) and dtype float32.
-            Values are in meters. Invalid depth is represented as infinity or NaN.
-        """
-        self._ensure_renderer(width, height)
-        
-        # Enable depth rendering and update scene
-        self.renderer.enable_depth_rendering()
-        self.renderer.update_scene(self.data, camera=camera_name)
-        depth = self.renderer.render()
-        
-        # Disable depth rendering to restore normal state
-        self.renderer.disable_depth_rendering()
-        
-        return depth
-    
-    def save_camera_image(self, camera_name: str, filepath: str, width: int = 640, height: int = 480):
-        """
-        Save RGB camera image to PNG file.
-        
-        Args:
-            camera_name: Name of the camera to render from
-            filepath: Output filepath (should end with .png)
-            width: Image width in pixels
-            height: Image height in pixels
-        """
-        rgb = self.render_camera(camera_name, width, height)
-        
-        # Convert RGB to BGR for OpenCV
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        
-        # Save to file
-        success = cv2.imwrite(filepath, bgr)
-        if not success:
-            raise IOError(f"Failed to save image to {filepath}")
-    
-    def get_pointcloud(
-        self,
-        camera_name: str,
-        width: int = 640,
-        height: int = 480,
-        min_depth: float = 0.1,
-        max_depth: float = 2.0
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Generate pointcloud from RGB-D data with depth filtering.
-        
-        Args:
-            camera_name: Name of the camera to render from
-            width: Image width in pixels
-            height: Image height in pixels
-            min_depth: Minimum valid depth in meters (default: 0.1)
-            max_depth: Maximum valid depth in meters (default: 2.0)
-            
-        Returns:
-            Tuple of (points, colors) where:
-            - points: Nx3 numpy array of 3D points in world coordinates
-            - colors: Nx3 numpy array of RGB colors (uint8, range 0-255)
-        """
-        # Capture RGB and depth
-        rgb = self.render_camera(camera_name, width, height)
-        depth = self.render_depth(camera_name, width, height)
-        
-        # Get camera intrinsics
-        fx, fy, cx, cy = self._get_camera_intrinsics(camera_name, width, height)
-        
-        # Create pixel coordinate grids
-        u = np.arange(width)
-        v = np.arange(height)
-        u_grid, v_grid = np.meshgrid(u, v)
-        
-        # Flatten arrays
-        u_flat = u_grid.flatten()
-        v_flat = v_grid.flatten()
-        depth_flat = depth.flatten()
-        rgb_flat = rgb.reshape(-1, 3)
-        
-        # Filter valid depths
-        valid_mask = (
-            np.isfinite(depth_flat) &
-            (depth_flat >= min_depth) &
-            (depth_flat <= max_depth)
-        )
-        
-        u_valid = u_flat[valid_mask]
-        v_valid = v_flat[valid_mask]
-        depth_valid = depth_flat[valid_mask]
-        colors_valid = rgb_flat[valid_mask]
-        
-        # Unproject to camera coordinates
-        x_cam = (u_valid - cx) * depth_valid / fx
-        y_cam = (v_valid - cy) * depth_valid / fy
-        z_cam = depth_valid
-        
-        # Stack into Nx3 array (camera coordinates)
-        points_cam = np.stack([x_cam, y_cam, z_cam], axis=1)
-        
-        # Get camera pose to transform to world coordinates
-        camera_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
-        if camera_id == -1:
-            raise ValueError(f"Camera '{camera_name}' not found in the model.")
-        
-        # Get camera position and orientation in world frame
-        cam_pos = self.data.cam_xpos[camera_id]
-        cam_mat = self.data.cam_xmat[camera_id].reshape(3, 3)
-        
-        # Transform points from camera to world coordinates
-        # Note: MuJoCo camera looks down -Z axis in camera frame
-        points_world = (cam_mat @ points_cam.T).T + cam_pos
-        
-        return points_world, colors_valid
-    
     def close(self):
         """Close the environment and release resources."""
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
+        if self.camera is not None:
+            self.camera.close()
         
         if self.viewer is not None:
             self.viewer.close()

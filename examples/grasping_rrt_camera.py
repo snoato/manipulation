@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from manipulation import FrankaEnvironment, RRTStar, ControllerStatus
+from manipulation.perception import MujocoCamera
 
 _HERE = Path(__file__).parent
 _XML = _HERE / ".." / "manipulation" / "environments" / "assets" / "franka_emika_panda" / "scene_test.xml"
@@ -15,6 +16,9 @@ def main():
     print(f"Saving images to: {_OUTPUT_DIR}")
     
     env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    
+    # Create camera instance for capturing images
+    camera = MujocoCamera(env, width=640, height=480)
     
     # Initialize RRT* planner
     planner = RRTStar(env)
@@ -140,7 +144,7 @@ def main():
                     # Capture from all three cameras
                     for cam_name in ["top_camera", "side_camera", "front_camera"]:
                         filename = _OUTPUT_DIR / f"grasp_{capture_count:02d}_{target}_{cam_name}.png"
-                        env.save_camera_image(cam_name, str(filename))
+                        camera.save_image(cam_name, str(filename))
                     
                     print(f"        ✓ Saved 3 images (grasp_{capture_count:02d}_*)")
                 

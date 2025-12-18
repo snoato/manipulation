@@ -1,8 +1,12 @@
 import numpy as np
 from manipulation.environments.franka_env import FrankaEnvironment
+from manipulation.perception import MujocoCamera
 
 # Create environment (headless - no viewer)
 env = FrankaEnvironment("manipulation/environments/assets/franka_emika_panda/scene_symbolic.xml")
+
+# Create camera instance
+camera = MujocoCamera(env, width=640, height=480)
 
 # Update scene
 env.forward()
@@ -16,28 +20,18 @@ for cam_name in cameras:
     print(f"=== {cam_name} ===")
     
     # Capture RGB
-    rgb = env.render_camera(cam_name, width=640, height=480)
+    rgb = camera.render_rgb(cam_name, width=640, height=480)
     print(f"RGB: shape={rgb.shape}, range=[{rgb.min()}, {rgb.max()}], mean={rgb.mean():.1f}")
     
     # Save snapshot
     filename = f"test_{cam_name}.png"
-    env.save_camera_image(cam_name, filename)
+    camera.save_image(cam_name, filename)
     print(f"Saved: {filename}")
     
     # Capture depth
-    depth = env.render_depth(cam_name, width=640, height=480)
+    depth = camera.render_depth(cam_name, width=640, height=480)
     valid = depth[np.isfinite(depth) & (depth > 0)]
     print(f"Depth: range=[{valid.min():.3f}m, {valid.max():.3f}m], valid={len(valid)}/{depth.size}")
-    
-    # Test pointcloud
-    points, colors = env.get_pointcloud(cam_name, min_depth=0.2, max_depth=1.5)
-    print(f"Pointcloud: {points.shape[0]} points")
-    
-    if points.shape[0] > 0:
-        print(f"  Bounds: X=[{points[:, 0].min():.2f}, {points[:, 0].max():.2f}]")
-        print(f"          Y=[{points[:, 1].min():.2f}, {points[:, 1].max():.2f}]")
-        print(f"          Z=[{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
-    print()
 
 env.close()
 print("✓ All images saved. Open them to verify the scene is visible.")
