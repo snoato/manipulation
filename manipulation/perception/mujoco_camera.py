@@ -15,9 +15,9 @@ class MujocoCamera:
     
     Handles all camera-related operations for MuJoCo simulations including:
     - RGB/depth/segmentation rendering
-    - Pointcloud generation from RGB-D data
-    - Object-segmented pointcloud extraction
     - Camera intrinsics calculation
+    - Point cloud generation from depth images
+    - Camera pose extraction (position and orientation)
     """
     
     def __init__(
@@ -230,6 +230,121 @@ class MujocoCamera:
         success = cv2.imwrite(filepath, bgr)
         if not success:
             raise IOError(f"Failed to save image to {filepath}")
+    
+    def _get_camera_pose(self, camera_name: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get camera position and rotation matrix in world frame.
+        
+        Args:
+            camera_name: Name of the camera
+            
+        Returns:
+            Tuple of (position, rotation_matrix) where:
+            - position is 3D vector (x, y, z) in meters
+            - rotation_matrix is 3x3 rotation matrix from camera to world frame
+        """
+        model = self.env.get_model()
+        data = self.env.get_data()
+        
+        camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+        if camera_id == -1:
+            raise ValueError(f"Camera '{camera_name}' not found in the model.")
+        
+        # Get camera position (3D vector)
+        cam_pos = data.cam_xpos[camera_id].copy()
+        
+        # Get camera rotation matrix (3x3 matrix, stored as flat 9 elements)
+        cam_mat = data.cam_xmat[camera_id].reshape(3, 3).copy()
+        
+        return cam_pos, cam_mat
+    
+    def get_pointcloud(
+        self,
+        camera_name: str,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        num_samples: int = 1000,
+        min_depth: float = 0.3,
+        max_depth: float = 3.0
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate point cloud from camera depth image.
+        
+        Samples points from depth map, unprojects to 3D using pinhole camera model,
+        and transforms to world frame using camera pose.
+        """
+        # Capture RGB and depth images
+        rgb = self.render_rgb(camera_name, width, height)
+        depth = self.render_depth(camera_name, width, height)
+        
+        img_height, img_width = depth.shape
+        
+        # Get camera intrinsics
+        fx, fy, cx, cy = self.get_camera_intrinsics(camera_name, img_width, img_height)
+        
+        # Create pixel coordinate grids
+        u_coords, v_coords = np.meshgrid(
+            np.arange(img_width, dtype=np.float32),
+            np.arange(img_height, dtype=np.float32),
+            indexing='xy'
+        )
+        
+        # Flatten arrays
+        u_flat = u_coords.ravel()
+        v_flat = v_coords.ravel()
+        depth_flat = depth.ravel()
+        rgb_flat = rgb.reshape(-1, 3)
+        
+        # Filter valid depths
+        valid_mask = (depth_flat >= min_depth) & (depth_flat <= max_depth) & np.isfinite(depth_flat)
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) == 0:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+        
+        # Random sampling to reduce point count
+        if len(valid_indices) > num_samples:
+            sampled_indices = np.random.choice(valid_indices, size=num_samples, replace=False)
+        else:
+            sampled_indices = valid_indices
+        
+        # Get sampled data
+        u_sampled = u_flat[sampled_indices]
+        v_sampled = v_flat[sampled_indices]
+        depth_sampled = depth_flat[sampled_indices]
+        colors_sampled = rgb_flat[sampled_indices]
+        
+        # 1. Unproject to "Standard Vision" frame (Z-forward, Y-down, X-right)
+        # We use positive depth here. We will correct the frame orientation later using matrices.
+        x_cam = (u_sampled - cx) * depth_sampled / fx
+        y_cam = (v_sampled - cy) * depth_sampled / fy
+        z_cam = depth_sampled 
+        
+        # Stack into Nx3 array
+        points_cam = np.stack([x_cam, y_cam, z_cam], axis=1)
+        
+        # 2. Get camera pose in world frame
+        cam_pos, cam_rot = self._get_camera_pose(camera_name)
+        
+        # 3. Define the coordinate correction matrix
+        # Rotates "Vision" frame (Z-forward, Y-down) to "MuJoCo/OpenGL" frame (Z-backward, Y-up)
+        # This is a 180-degree rotation around the X-axis.
+        R_correction = np.array([
+            [1,  0,  0],
+            [0, -1,  0],
+            [0,  0, -1]
+        ], dtype=np.float32)
+        
+        # 4. Transform to World Frame
+        # Formula: P_world = R_mujoco * (R_correction * P_vision) + t_mujoco
+        
+        # Combine rotations (more efficient than rotating points twice)
+        R_total = cam_rot @ R_correction
+        
+        # Apply transformation
+        points_world = (R_total @ points_cam.T).T + cam_pos
+        
+        return points_world.astype(np.float32), colors_sampled.astype(np.uint8)
     
     def _build_object_cache(self):
         """
