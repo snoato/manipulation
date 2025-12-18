@@ -346,6 +346,182 @@ class MujocoCamera:
         
         return points_world.astype(np.float32), colors_sampled.astype(np.uint8)
     
+    def get_segmented_pointcloud(
+        self,
+        camera_name: str,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        num_samples: int = 1000,
+        min_depth: float = 0.3,
+        max_depth: float = 3.0,
+        exclude_patterns: Optional[List[str]] = None
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Generate segmented point clouds for each object in the scene.
+        
+        Args:
+            camera_name: Name of the camera
+            width: Image width in pixels (uses default if None)
+            height: Image height in pixels (uses default if None)
+            num_samples: Maximum number of points to sample per object
+            min_depth: Minimum depth in meters
+            max_depth: Maximum depth in meters
+            exclude_patterns: Additional patterns to exclude from results
+            
+        Returns:
+            Dictionary mapping object name to (points, colors) tuple.
+            points: Nx3 float32 array of world coordinates
+            colors: Nx3 uint8 array of RGB values
+        """
+        # Capture RGB, depth, and segmentation
+        rgb = self.render_rgb(camera_name, width, height)
+        depth = self.render_depth(camera_name, width, height)
+        seg = self.render_segmentation(camera_name, width, height)
+        
+        img_height, img_width = depth.shape
+        
+        # Get camera intrinsics and pose
+        fx, fy, cx, cy = self.get_camera_intrinsics(camera_name, img_width, img_height)
+        cam_pos, cam_rot = self._get_camera_pose(camera_name)
+        
+        # Create pixel coordinate grids
+        u_coords, v_coords = np.meshgrid(
+            np.arange(img_width, dtype=np.float32),
+            np.arange(img_height, dtype=np.float32),
+            indexing='xy'
+        )
+        
+        # Flatten arrays
+        u_flat = u_coords.ravel()
+        v_flat = v_coords.ravel()
+        depth_flat = depth.ravel()
+        rgb_flat = rgb.reshape(-1, 3)
+        geom_ids_flat = seg[:, :, 0].ravel()
+        
+        # Filter valid depths
+        valid_mask = (depth_flat >= min_depth) & (depth_flat <= max_depth) & np.isfinite(depth_flat)
+        
+        # Result dictionary
+        segmented_clouds = {}
+        
+        # Identify unique geoms in the valid depth range
+        present_geoms = np.unique(geom_ids_flat[valid_mask])
+        
+        # Pre-calculate coordinate correction matrix
+        R_correction = np.array([
+            [1,  0,  0],
+            [0, -1,  0],
+            [0,  0, -1]
+        ], dtype=np.float32)
+        R_total = cam_rot @ R_correction
+        
+        for geom_id in present_geoms:
+            # Check if excluded
+            if geom_id in self._object_cache['excluded_geoms']:
+                continue
+                
+            # Get object name
+            body_name = self._object_cache['geom_to_name'].get(geom_id)
+            if not body_name:
+                continue
+                
+            # Check exclude patterns
+            if exclude_patterns and any(p in body_name for p in exclude_patterns):
+                continue
+            
+            # Get indices for this geom
+            geom_mask = (geom_ids_flat == geom_id) & valid_mask
+            geom_indices = np.where(geom_mask)[0]
+            
+            if len(geom_indices) == 0:
+                continue
+            
+            # Extract data
+            u_sampled = u_flat[geom_indices]
+            v_sampled = v_flat[geom_indices]
+            depth_sampled = depth_flat[geom_indices]
+            colors_sampled = rgb_flat[geom_indices]
+            
+            # Unproject to camera frame
+            x_cam = (u_sampled - cx) * depth_sampled / fx
+            y_cam = (v_sampled - cy) * depth_sampled / fy
+            z_cam = depth_sampled;
+            
+            points_cam = np.stack([x_cam, y_cam, z_cam], axis=1);
+            
+            # Transform to world frame
+            points_world = (R_total @ points_cam.T).T + cam_pos;
+            
+            # Add to result (accumulate if multiple geoms belong to same body)
+            if body_name in segmented_clouds:
+                prev_pts, prev_cols = segmented_clouds[body_name]
+                segmented_clouds[body_name] = (
+                    np.vstack([prev_pts, points_world.astype(np.float32)]),
+                    np.vstack([prev_cols, colors_sampled.astype(np.uint8)])
+                )
+            else:
+                segmented_clouds[body_name] = (
+                    points_world.astype(np.float32),
+                    colors_sampled.astype(np.uint8)
+                )
+        
+        # Final resampling to respect num_samples per object
+        for name in list(segmented_clouds.keys()):
+            pts, cols = segmented_clouds[name]
+            if len(pts) > num_samples:
+                indices = np.random.choice(len(pts), size=num_samples, replace=False)
+                segmented_clouds[name] = (pts[indices], cols[indices])
+                
+        return segmented_clouds
+    
+    def get_multi_camera_segmented_pointcloud(
+        self,
+        camera_names: List[str],
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        num_samples_per_camera: int = 1000,
+        min_depth: float = 0.3,
+        max_depth: float = 3.0,
+        exclude_patterns: Optional[List[str]] = None
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Generate and merge segmented point clouds from multiple cameras.
+        
+        Args:
+            camera_names: List of camera names to use
+            width: Image width in pixels
+            height: Image height in pixels
+            num_samples_per_camera: Max points per object per camera
+            min_depth: Minimum depth in meters
+            max_depth: Maximum depth in meters
+            exclude_patterns: Additional patterns to exclude
+            
+        Returns:
+            Dictionary mapping object name to (points, colors) tuple.
+        """
+        merged_clouds = {}
+        
+        for cam_name in camera_names:
+            try:
+                clouds = self.get_segmented_pointcloud(
+                    cam_name, width, height, num_samples_per_camera,
+                    min_depth, max_depth, exclude_patterns
+                )
+                
+                for obj_name, (points, colors) in clouds.items():
+                    if obj_name in merged_clouds:
+                        prev_pts, prev_cols = merged_clouds[obj_name]
+                        merged_clouds[obj_name] = (
+                            np.vstack([prev_pts, points]),
+                            np.vstack([prev_cols, colors])
+                        )
+                    else:
+                        merged_clouds[obj_name] = (points, colors)
+            except ValueError as e:
+                print(f"Warning: Skipping camera '{cam_name}': {e}")
+                    
+        return merged_clouds
+    
     def _build_object_cache(self):
         """
         Build a cache of object information for efficient segmentation.

@@ -233,9 +233,6 @@ class FrankaEnvironment(BaseEnvironment):
     
     def close(self):
         """Close the environment and release resources."""
-        if self.camera is not None:
-            self.camera.close()
-        
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
