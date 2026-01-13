@@ -320,7 +320,7 @@ def main():
     
     # Create tabletop-domain directory and copy domain.pddl
     import shutil
-    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
     output_base.mkdir(parents=True, exist_ok=True)
     
     domain_src = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "domain.pddl"
