@@ -15,7 +15,8 @@ from manipulation.symbolic.domains.tabletop.state_manager import StateManager
 def visualize_grid_state(state_manager: StateManager, 
                          save_path: Optional[str] = None,
                          title: str = "Grid State",
-                         figsize: tuple = (12, 10)):
+                         figsize: tuple = (12, 10),
+                         target_cylinder: Optional[str] = None):
     """
     Visualize grid state with matplotlib.
     
@@ -24,6 +25,7 @@ def visualize_grid_state(state_manager: StateManager,
         save_path: Optional path to save figure
         title: Figure title
         figsize: Figure size
+        target_cylinder: Optional cylinder name to highlight (e.g., 'cylinder_0')
     """
     grid = state_manager.grid
     state = state_manager.ground_state()
@@ -64,6 +66,7 @@ def visualize_grid_state(state_manager: StateManager,
         cyl_idx = int(cyl_name.split('_')[1])
         color_idx = cyl_idx % 10
         color = colors[color_idx]
+        is_target = (cyl_name == target_cylinder)
         
         # Shade occupied cells
         for cell_name in occupied_cells:
@@ -90,15 +93,26 @@ def visualize_grid_state(state_manager: StateManager,
             # Get cylinder radius
             radius, _ = StateManager.CYLINDER_SPECS[cyl_idx]
             
-            circle = patches.Circle(
-                (centroid_x, centroid_y), radius,
-                linewidth=2, edgecolor=color, facecolor='none'
-            )
-            ax.add_patch(circle)
+            # Use thicker line and different style for target cylinder
+            if is_target:
+                circle = patches.Circle(
+                    (centroid_x, centroid_y), radius,
+                    linewidth=4, edgecolor='black', facecolor=color, alpha=0.6
+                )
+                ax.add_patch(circle)
+                # Add a star marker for target
+                ax.plot(centroid_x, centroid_y, marker='*', markersize=15,
+                       color='black', markeredgecolor='white', markeredgewidth=0.5)
+            else:
+                circle = patches.Circle(
+                    (centroid_x, centroid_y), radius,
+                    linewidth=2, edgecolor=color, facecolor='none'
+                )
+                ax.add_patch(circle)
             
             # Add label
-            ax.text(centroid_x, centroid_y, str(cyl_idx),
-                   ha='center', va='center', fontsize=8, fontweight='bold')
+            ax.text(centroid_x, centroid_y + radius + 0.005, str(cyl_idx),
+                   ha='center', va='bottom', fontsize=8, fontweight='bold')
             
             drawn_cylinders.add(cyl_name)
     

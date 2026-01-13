@@ -210,7 +210,8 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
             visualize_grid_state(
                 state_manager,
                 save_path=viz_path,
-                title=f"{split_name.capitalize()} Configuration {config_num}"
+                title=f"{split_name.capitalize()} Configuration {config_num}",
+                target_cylinder=target_cylinder
             )
         
         # Log to wandb
