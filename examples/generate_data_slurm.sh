@@ -22,7 +22,9 @@ PROJECT_ROOT="/work/rleap1/daniel.swoboda/projects/manipulation"  # Update this 
 
 # Output configuration
 OUTPUT_DIR="/work/rleap1/daniel.swoboda/projects/rgnet/data/manipulation_dataset"  # Directory to save generated data
-NUM_EXAMPLES=1000
+NUM_TRAIN=1000
+NUM_TEST=100
+NUM_VAL=100
 
 # Object configuration
 MIN_OBJECTS=3
@@ -67,6 +69,12 @@ mkdir -p "${SLURM_SUBMIT_DIR}/logs"
 # module load python/3.10
 # module load mujoco/2.3.0
 
+# Activate Python virtual environment
+if [ -d "${PYTHON_ENV}" ]; then
+    conda deactivate
+    conda activate rgnet
+fi
+
 # Set environment variables for headless rendering (MuJoCo)
 #export MUJOCO_GL=egl  # Use EGL for GPU rendering without display
 #export DISPLAY=""     # Disable X11 display
@@ -80,7 +88,9 @@ cd "${PROJECT_ROOT}" || exit 1
 # Build command with arguments
 CMD="python examples/generate_data.py"
 CMD="${CMD} --output-dir ${OUTPUT_DIR}"
-CMD="${CMD} --num-examples ${NUM_EXAMPLES}"
+CMD="${CMD} --num-train ${NUM_TRAIN}"
+CMD="${CMD} --num-test ${NUM_TEST}"
+CMD="${CMD} --num-val ${NUM_VAL}"
 CMD="${CMD} --min-objects ${MIN_OBJECTS}"
 CMD="${CMD} --max-objects ${MAX_OBJECTS}"
 CMD="${CMD} --grid-width ${GRID_WIDTH}"

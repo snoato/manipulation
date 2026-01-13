@@ -4,6 +4,10 @@ from pathlib import Path
 import time
 import argparse
 import numpy as np
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 from manipulation import FrankaEnvironment, RRTStar, ControllerStatus
 from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
@@ -13,7 +17,9 @@ _XML = _HERE / ".." / "manipulation" / "environments" / "assets" / "franka_emika
 
 # Default values
 _DEFAULT_OUTPUT_DIR = _HERE / ".." / "data"
-_DEFAULT_EXAMPLES = 1000
+_DEFAULT_TRAIN_EXAMPLES = 1000
+_DEFAULT_TEST_EXAMPLES = 100
+_DEFAULT_VAL_EXAMPLES = 100
 _DEFAULT_TARGETS_MAX = 7
 _DEFAULT_TARGETS_MIN = 3
 _DEFAULT_GRID_SIZE = (0.4, 0.3)  # 40cm x 40cm
@@ -38,11 +44,24 @@ def parse_args():
     
     # Generation parameters
     parser.add_argument(
-        "--num-examples",
+        "--num-train",
         type=int,
-        default=_DEFAULT_EXAMPLES,
-        help="Number of problem configurations to generate"
+        default=_DEFAULT_TRAIN_EXAMPLES,
+        help="Number of training examples to generate"
     )
+    parser.add_argument(
+        "--num-test",
+        type=int,
+        default=_DEFAULT_TEST_EXAMPLES,
+        help="Number of testing examples to generate"
+    )
+    parser.add_argument(
+        "--num-val",
+        type=int,
+        default=_DEFAULT_VAL_EXAMPLES,
+        help="Number of validation examples to generate"
+    )
+    
     parser.add_argument(
         "--min-objects",
         type=int,
@@ -124,6 +143,106 @@ def parse_args():
     
     return parser.parse_args()
 
+def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
+    """
+    Generate a dataset split.
+    
+    Args:
+        split_name (str): Name of the split (train, test, val)
+        num_examples (int): Number of examples to generate
+        env (FrankaEnvironment): The initialized environment
+        grid (GridDomain): The initialized grid domain
+        args (Namespace): Parsed command line arguments
+        wandb_run: Active wandb run, or None
+    """
+    if num_examples <= 0:
+        print(f"Skipping {split_name} split (0 examples requested)")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"Generating {split_name} dataset ({num_examples} examples)")
+    print(f"{'='*70}")
+
+    # Create state manager
+    state_manager = StateManager(grid, env)
+    
+    # Create output directories
+    output_base = Path(args.output_dir)
+    # Structure: {output_dir}/{split}/tabletop/problems/
+    problem_dir = output_base / split_name / "tabletop" / "problems"
+    viz_dir = output_base / split_name / "viz" / "tabletop"
+    
+    problem_dir.mkdir(parents=True, exist_ok=True)
+    if not args.no_viz:
+        viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"   Problem directory: {problem_dir}")
+    if not args.no_viz:
+        print(f"   Visualization directory: {viz_dir}")
+
+    start_time = time.time()
+    
+    for i in range(num_examples):
+        config_num = i+1
+        
+        # Sample random state
+        n_cylinders = np.random.randint(args.min_objects, args.max_objects + 1)
+        state_manager.sample_random_state(n_cylinders=n_cylinders)
+        
+        # Ground state to get object details
+        grounded_state = state_manager.ground_state()
+        actual_cylinders = len(grounded_state['cylinders'])
+        
+        # Generate PDDL problem
+        cylinders = sorted(state_manager.ground_state()['cylinders'].keys())
+        target_cylinder = np.random.choice(cylinders)
+        problem_path = problem_dir / f"config_{config_num}.pddl"
+        state_manager.generate_pddl_problem(
+            f"config-{config_num}",
+            problem_path,
+            f"(holding {target_cylinder})"
+        )
+        
+        # Visualize if enabled
+        viz_path = None
+        if not args.no_viz:
+            viz_path = viz_dir / f"config_{config_num}.png"
+            visualize_grid_state(
+                state_manager,
+                save_path=viz_path,
+                title=f"{split_name.capitalize()} Configuration {config_num}"
+            )
+        
+        # Log to wandb
+        if wandb_run is not None:
+            log_data = {
+                f"{split_name}/progress": (i + 1) / num_examples,
+                f"{split_name}/config_num": config_num,
+                f"{split_name}/n_objects": actual_cylinders,
+            }
+            
+            # Log visualization image if available
+            if viz_path is not None and viz_path.exists():
+                log_data[f"{split_name}/visualization"] = wandb.Image(str(viz_path))
+            
+            wandb.log(log_data)
+        
+        # Rest if viewer is active
+        if args.viewer:
+            env.rest(2.0)
+        
+        # Print progress estimate
+        if (i + 1) % 10 == 0 or i == 0 or i == num_examples - 1:
+            elapsed = time.time() - start_time
+            avg_time = elapsed / (i + 1)
+            remaining = avg_time * (num_examples - i - 1)
+            print(f"   [{split_name}] {i+1}/{num_examples} | Saved: {problem_path.name} | "
+                  f"Elapsed: {elapsed:.1f}s | "
+                  f"Est. remaining: {remaining:.1f}s")
+
+    total_time = time.time() - start_time
+    print(f"   {split_name} complete in {total_time:.1f}s")
+
 def main():
     # Parse command-line arguments
     args = parse_args()
@@ -136,15 +255,18 @@ def main():
     # Initialize wandb if requested
     wandb_run = None
     if args.wandb:
-        try:
-            import wandb
-            
+        if wandb is None:
+            print("WARNING: wandb not installed. Install with: pip install wandb")
+            print("Continuing without W&B logging...")
+        else:
             # Initialize wandb
             wandb_run = wandb.init(
                 project=args.wandb_project,
                 name=args.wandb_run_name,
                 config={
-                    "num_examples": args.num_examples,
+                    "num_train": args.num_train,
+                    "num_test": args.num_test,
+                    "num_val": args.num_val,
                     "min_objects": args.min_objects,
                     "max_objects": args.max_objects,
                     "grid_width": args.grid_width,
@@ -155,16 +277,15 @@ def main():
                 }
             )
             print("W&B logging enabled")
-        except ImportError:
-            print("WARNING: wandb not installed. Install with: pip install wandb")
-            print("Continuing without W&B logging...")
     
     print("=" * 70)
     print("Symbolic Planning Data Generation")
     print("=" * 70)
     print(f"\nConfiguration:")
     print(f"  Output directory: {args.output_dir}")
-    print(f"  Number of examples: {args.num_examples}")
+    print(f"  Train examples: {args.num_train}")
+    print(f"  Test examples: {args.num_test}")
+    print(f"  Val examples: {args.num_val}")
     print(f"  Objects per config: {args.min_objects}-{args.max_objects}")
     print(f"  Grid size: {args.grid_width}m x {args.grid_height}m")
     print(f"  Cell size: {args.cell_size}m")
@@ -189,110 +310,36 @@ def main():
     info = grid.get_grid_info()
     print(f"   Grid: {info['grid_dimensions'][0]}x{info['grid_dimensions'][1]} cells ({info['cell_size']*100:.1f}cm)")
     
-    # Create state manager
-    state_manager = StateManager(grid, env)
-    
-    # Create output directories
-    output_base = Path(args.output_dir)
-    problem_dir = output_base / "tabletop" / "problems"
-    viz_dir = output_base / "viz" / "tabletop"
-    problem_dir.mkdir(parents=True, exist_ok=True)
-    if not args.no_viz:
-        viz_dir.mkdir(parents=True, exist_ok=True)
-    
-    print(f"   Problem directory: {problem_dir}")
-    if not args.no_viz:
-        print(f"   Visualization directory: {viz_dir}")
-    
     # Launch viewer if requested
     if args.viewer:
         viewer = env.launch_viewer()
         if not viewer.is_running():
             raise Exception("no viewer available")
         print("   Viewer launched")
+        
+    # Generate splits
+    start_total = time.time()
     
-    # Generation loop
-    print("\n3. Generating configurations...")
-    start_time = time.time()
-    
-    for i in range(args.num_examples):
-        config_num = i+1
-        print(f"\n{'='*70}")
-        print(f"Configuration {config_num} ({i+1}/{args.num_examples})")
-        print(f"{'='*70}")
-        
-        # Sample random state
-        n_cylinders = np.random.randint(args.min_objects, args.max_objects + 1)
-        state_manager.sample_random_state(n_cylinders=n_cylinders)
-        
-        # Ground and visualize state
-        grounded_state = state_manager.ground_state()
-        actual_cylinders = len(grounded_state['cylinders'])
-        print(f"   Active cylinders: {actual_cylinders}")
-        
-        # Generate PDDL problem
-        cylinders = sorted(state_manager.ground_state()['cylinders'].keys())
-        target_cylinder = np.random.choice(cylinders)
-        problem_path = problem_dir / f"config_{config_num}.pddl"
-        state_manager.generate_pddl_problem(
-            f"config-{config_num}",
-            problem_path,
-            f"(holding {target_cylinder})"
-        )
-        print(f"   Saved PDDL: {problem_path.name}")
-        
-        # Visualize if enabled
-        viz_path = None
-        if not args.no_viz:
-            viz_path = viz_dir / f"config_{config_num}.png"
-            visualize_grid_state(
-                state_manager,
-                save_path=viz_path,
-                title=f"Configuration {config_num}"
-            )
-            print(f"   Saved visualization: {viz_path.name}")
-        
-        # Log to wandb
-        if wandb_run is not None:
-            log_data = {
-                "config_num": config_num,
-                "n_objects": actual_cylinders,
-                "progress": (i + 1) / args.num_examples,
-            }
-            
-            # Log visualization image if available
-            if viz_path is not None and viz_path.exists():
-                log_data["visualization"] = wandb.Image(str(viz_path))
-            
-            wandb.log(log_data)
-        
-        # Rest if viewer is active
-        if args.viewer:
-            env.rest(2.0)
-        
-        # Print progress estimate
-        if (i + 1) % 10 == 0 or i == 0:
-            elapsed = time.time() - start_time
-            avg_time = elapsed / (i + 1)
-            remaining = avg_time * (args.num_examples - i - 1)
-            print(f"   Progress: {i+1}/{args.num_examples} | "
-                  f"Elapsed: {elapsed:.1f}s | "
-                  f"Est. remaining: {remaining:.1f}s")
+    generate_dataset("train", args.num_train, env, grid, args, wandb_run)
+    generate_dataset("test", args.num_test, env, grid, args, wandb_run)
+    generate_dataset("val", args.num_val, env, grid, args, wandb_run)
     
     # Summary
-    total_time = time.time() - start_time
+    total_time = time.time() - start_total
+    total_examples = args.num_train + args.num_test + args.num_val
     print(f"\n{'='*70}")
-    print(f"Generation Complete!")
+    print(f"All Generation Tasks Complete!")
     print(f"{'='*70}")
-    print(f"Total configurations: {args.num_examples}")
+    print(f"Total configurations: {total_examples}")
     print(f"Total time: {total_time:.1f}s ({total_time/60:.1f}m)")
-    print(f"Average time per config: {total_time/args.num_examples:.2f}s")
-    print(f"Output directory: {output_base}")
+    if total_examples > 0:
+        print(f"Average time per config: {total_time/total_examples:.2f}s")
+    print(f"Output directory: {args.output_dir}")
     
     if wandb_run is not None:
         wandb.log({
             "total_time_seconds": total_time,
-            "avg_time_per_config": total_time / args.num_examples,
+            "avg_time_per_config": total_time / total_examples if total_examples > 0 else 0,
         })
         wandb.finish()
         print("W&B run finished")
