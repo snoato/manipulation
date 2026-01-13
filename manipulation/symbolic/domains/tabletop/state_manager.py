@@ -64,7 +64,6 @@ class StateManager(BaseStateManager):
         self.model = env.get_model()
         self.data = env.get_data()
         self.gripper_holding = None  # Track what gripper is holding
-        
     
     def _get_cylinder_occupied_cells(self, cyl_idx: int) -> Set[str]:
         """
@@ -185,9 +184,6 @@ class StateManager(BaseStateManager):
         if cylinder_names:
             objects.append(f"    {' '.join(cylinder_names)} - cylinder")
         
-        # Gripper
-        objects.append("    gripper1 - gripper")
-        
         # Build init section
         init_predicates = []
         
@@ -211,9 +207,9 @@ class StateManager(BaseStateManager):
         
         # Gripper state
         if state['gripper_empty']:
-            init_predicates.append("    (gripper-empty gripper1)")
+            init_predicates.append("    (gripper-empty)")
         else:
-            init_predicates.append(f"    (holding gripper1 {state['holding']})")
+            init_predicates.append(f"    (holding {state['holding']})")
         
         # Build PDDL problem
         problem = f"""(define (problem {problem_name})

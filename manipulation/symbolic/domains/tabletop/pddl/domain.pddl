@@ -2,57 +2,48 @@
   (:requirements :strips :typing)
   
   (:types
-    cell cylinder gripper direction
+    cell cylinder direction
   )
   
   (:constants
-    north south east west - direction
+    north east - direction
   )
   
   (:predicates
-    (adjacent ?dir - direction ?c1 - cell ?c2 - cell)  ; cell c2 is adjacent to c1 in direction dir
-    (occupied ?c - cell ?cyl - cylinder)  ; cell c contains cylinder cyl
-    (empty ?c - cell)                     ; cell c is empty
-    (holding ?g - gripper ?cyl - cylinder)  ; gripper g is holding cylinder cyl
-    (gripper-empty ?g - gripper)       ; gripper g is not holding anything
+    (adjacent ?dir - direction ?cel1 - cell ?cel2 - cell)  ; cell cel2 is adjacent to cel1 in direction dir
+    (occupied ?cel - cell ?cyl - cylinder)              ; cell contains cylinder
+    (empty ?cel - cell)                     ; cell is empty
+    (holding ?cyl - cylinder)               ; gripper is holding cylinder cyl
+    (gripper-empty)                         ; gripper is not holding anything
+    (discarded ?cyl - cylinder)             ; cylinder is discarded
   )
   
   (:action pick
-    :parameters (?g - gripper ?cyl - cylinder ?c - cell)
+    :parameters (?cyl - cylinder ?cel - cell)
     :precondition (and
-      (gripper-empty ?g)
-      (occupied ?c ?cyl)
+      (gripper-empty)
+      (occupied ?cel ?cyl)
+      (not (discarded ?cyl))
     )
     :effect (and
-      (not (gripper-empty ?g))
+      (not (gripper-empty))
       (not (occupied ?c ?cyl))
-      (empty ?c)
-      (holding ?g ?cyl)
-    )
-  )
-  
-  (:action place
-    :parameters (?g - gripper ?cyl - cylinder ?c - cell)
-    :precondition (and
-      (holding ?g ?cyl)
-      (empty ?c)
-    )
-    :effect (and
-      (gripper-empty ?g)
-      (not (holding ?g ?cyl))
-      (not (empty ?c))
-      (occupied ?c ?cyl)
+      (empty ?cel)
+      (holding ?cyl)
     )
   )
 
   (:action drop
-    :parameters (?g - gripper ?cyl - cylinder)
+    :parameters (?cyl - cylinder)
     :precondition (and
-      (holding ?g ?cyl)
+      (not (gripper-empty))
+      (holding ?cyl)
+      (not (discarded ?cyl))
     )
     :effect (and
-      (gripper-empty ?g)
-      (not (holding ?g ?cyl))
+      (gripper-empty)
+      (not (holding ?cyl))
+      (discarded ?cyl)
     )
   )
 )

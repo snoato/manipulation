@@ -67,13 +67,6 @@ mkdir -p "${SLURM_SUBMIT_DIR}/logs"
 # module load python/3.10
 # module load mujoco/2.3.0
 
-# Activate Python virtual environment
-if [ -d "${PYTHON_ENV}" ]; then
-    conda deactivate
-    conda activate rgnet
-fi
-
-
 # Set environment variables for headless rendering (MuJoCo)
 #export MUJOCO_GL=egl  # Use EGL for GPU rendering without display
 #export DISPLAY=""     # Disable X11 display

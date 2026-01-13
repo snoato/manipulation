@@ -237,7 +237,7 @@ def main():
         state_manager.generate_pddl_problem(
             f"config-{config_num}",
             problem_path,
-            f"(holding gripper1 {target_cylinder})"
+            f"(holding {target_cylinder})"
         )
         print(f"   Saved PDDL: {problem_path.name}")
         

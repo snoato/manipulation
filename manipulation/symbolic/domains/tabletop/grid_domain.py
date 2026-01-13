@@ -204,8 +204,7 @@ class GridDomain(BaseDomain):
         Returns:
             Dict mapping each cell to a dict of {direction: neighbor_cell}.
             Example: {'cell_0_0': {'north': 'cell_0_1', 'east': 'cell_1_0'}, ...}
-            Edge cells will only have valid directions (2-3 directions),
-            corner cells will have exactly 2 directions.
+            Uses 2-way adjacency (North, East) to simplify state space.
         """
         adjacencies = {}
         
@@ -218,17 +217,9 @@ class GridDomain(BaseDomain):
                 if iy + 1 < self.cells_y:
                     cell_adjacencies['north'] = f"cell_{ix}_{iy + 1}"
                 
-                # South (decreasing y)
-                if iy - 1 >= 0:
-                    cell_adjacencies['south'] = f"cell_{ix}_{iy - 1}"
-                
                 # East (increasing x)
                 if ix + 1 < self.cells_x:
                     cell_adjacencies['east'] = f"cell_{ix + 1}_{iy}"
-                
-                # West (decreasing x)
-                if ix - 1 >= 0:
-                    cell_adjacencies['west'] = f"cell_{ix - 1}_{iy}"
                 
                 adjacencies[cell_id] = cell_adjacencies
         
