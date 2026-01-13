@@ -333,7 +333,7 @@ def main():
     
     generate_dataset("train", args.num_train, env, grid, args, wandb_run)
     generate_dataset("test", args.num_test, env, grid, args, wandb_run)
-    generate_dataset("val", args.num_val, env, grid, args, wandb_run)
+    generate_dataset("validation", args.num_val, env, grid, args, wandb_run)
     
     # Summary
     total_time = time.time() - start_total
