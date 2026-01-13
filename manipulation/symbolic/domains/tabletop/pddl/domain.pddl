@@ -1,5 +1,5 @@
 (define (domain tabletop-manipulation)
-  (:requirements :strips :typing)
+  (:requirements :strips :typing :negative-preconditions)
   
   (:types
     cell cylinder direction
@@ -27,7 +27,7 @@
     )
     :effect (and
       (not (gripper-empty))
-      (not (occupied ?c ?cyl))
+      (not (occupied ?cel ?cyl))
       (empty ?cel)
       (holding ?cyl)
     )
