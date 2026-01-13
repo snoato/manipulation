@@ -167,10 +167,10 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     state_manager = StateManager(grid, env)
     
     # Create output directories
-    output_base = Path(args.output_dir)
-    # Structure: {output_dir}/{split}/tabletop/problems/
-    problem_dir = output_base / split_name / "tabletop" / "problems"
-    viz_dir = output_base / split_name / "viz" / "tabletop"
+    output_base = Path(args.output_dir) / "tabletop-domain"
+    # Structure: {output_dir}/tabletop-domain/{split}/
+    problem_dir = output_base / split_name
+    viz_dir = output_base / split_name / "viz"
     
     problem_dir.mkdir(parents=True, exist_ok=True)
     if not args.no_viz:
@@ -316,6 +316,16 @@ def main():
         if not viewer.is_running():
             raise Exception("no viewer available")
         print("   Viewer launched")
+    
+    # Create tabletop-domain directory and copy domain.pddl
+    import shutil
+    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base.mkdir(parents=True, exist_ok=True)
+    
+    domain_src = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "domain.pddl"
+    domain_dst = output_base / "domain.pddl"
+    shutil.copy(domain_src, domain_dst)
+    print(f"   Copied domain.pddl to {domain_dst}")
         
     # Generate splits
     start_total = time.time()
