@@ -386,7 +386,7 @@ def generate_dataset_parallel(split_name, num_examples, args, num_workers):
     print(f"{'='*70}")
     
     # Create output directories (main process)
-    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
     problem_dir = output_base / split_name
     viz_dir = output_base / split_name / "viz"
     
@@ -466,7 +466,7 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     
     # Create output directories
     output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
-    # Structure: {output_dir}/tabletop-domain/{split}/
+    # Structure: {output_dir}/manipulation/tabletop-domain/{split}/
     problem_dir = output_base / split_name
     viz_dir = output_base / split_name / "viz"
     
@@ -642,7 +642,7 @@ def main():
     
     # Create tabletop-domain directory and copy domain.pddl (main process)
     import shutil
-    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
     output_base.mkdir(parents=True, exist_ok=True)
     
     domain_src = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "domain.pddl"
