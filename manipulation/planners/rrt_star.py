@@ -68,8 +68,12 @@ class RRTStar(BaseMotionPlanner):
         self,
         config1: np.ndarray,
         config2: np.ndarray,
-        steps: int = 10
+        steps: int = 5
     ) -> bool:
+        # Use optimized batch method from environment if available
+        if hasattr(self.env, 'is_path_collision_free'):
+            return self.env.is_path_collision_free(config1, config2, steps)
+        # Fallback to original implementation
         for i in range(steps + 1):
             alpha = i / steps
             config = (1 - alpha) * config1 + alpha * config2

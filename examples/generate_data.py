@@ -220,7 +220,7 @@ def find_shortest_plan(env, planner, target_obj, all_objects):
         current_objects, plan = queue.popleft()
         
         # Check if target is reachable in current state
-        # Ignored objects are those NOT in current_objects
+        # Ignored objects are those NOT in current_objects (already removed)
         ignored = list(all_objs_set - current_objects)
         
         if validate_grasp(env, planner, target_obj, ignored):
@@ -502,14 +502,12 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
         # If the target itself is in a bad pose (too far, etc), skip immediately
         all_others = [c for c in cylinders if c != target_cylinder]
         if not validate_grasp(env, planner, target_cylinder, all_others):
-            # print("  [Skip] Target unreachable even in isolation")
             continue
             
         # 2. Find shortest plan
         plan_sequence = find_shortest_plan(env, planner, target_cylinder, cylinders)
         
         if plan_sequence is None:
-            # print("  [Skip] No valid plan found")
             continue
             
         # If valid plan found, we accept this configuration

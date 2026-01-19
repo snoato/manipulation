@@ -31,6 +31,13 @@ class FrankaEnvironment(BaseEnvironment):
                 "link0", "link1", "link2", "link3", "link4", "link5", "link6",
                 "hand", "right_finger", "left_finger"
             ]
+        
+        # Cache body IDs for fast collision checking (converted to set for O(1) lookup)
+        self._collision_body_ids = set(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in self.collision_bodies
+        )
+        self._collision_exception_ids = set()
 
         self.collision_exceptions = []
 
@@ -91,35 +98,56 @@ class FrankaEnvironment(BaseEnvironment):
     def add_collision_exception(self, body_name: str):
         if body_name not in self.collision_exceptions:
             self.collision_exceptions.append(body_name)
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+            if body_id >= 0:
+                self._collision_exception_ids.add(body_id)
 
     def remove_collision_exception(self, body_name: str):
         if body_name in self.collision_exceptions:
             self.collision_exceptions.remove(body_name)
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+            if body_id >= 0:
+                self._collision_exception_ids.discard(body_id)
     
     def clear_collision_exceptions(self):
         self.collision_exceptions = []
+        self._collision_exception_ids = set()
+    
+    def set_collision_exceptions(self, body_names: list):
+        """Set collision exceptions and update cached IDs."""
+        self.collision_exceptions = list(body_names)
+        self._collision_exception_ids = set()
+        for name in body_names:
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if body_id >= 0:
+                self._collision_exception_ids.add(body_id)
 
     def check_collisions(self) -> bool:
-        collision_free = True
-        if self.data.ncon > 0:
-            for i in range(self.data.ncon):
-                contact = self.data.contact[i]
-                body1 = self.model.geom_bodyid[contact.geom1]
-                name1 = self.model.body(body1).name
-                body2 = self.model.geom_bodyid[contact.geom2]
-                name2 = self.model.body(body2).name
+        """Check for collisions using cached body IDs for fast lookup."""
+        if self.data.ncon == 0:
+            return True
+            
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            body1 = self.model.geom_bodyid[contact.geom1]
+            body2 = self.model.geom_bodyid[contact.geom2]
 
-                if name1 in self.collision_exceptions or name2 in self.collision_exceptions:
-                    continue
+            # Skip if either body is in exceptions (O(1) set lookup)
+            if body1 in self._collision_exception_ids or body2 in self._collision_exception_ids:
+                continue
+            
+            # Check if collision involves robot and environment
+            b1_is_robot = body1 in self._collision_body_ids
+            b2_is_robot = body2 in self._collision_body_ids
+            
+            # Skip self-collisions and non-robot collisions
+            if b1_is_robot == b2_is_robot:
+                continue
                 
-                if name1 in self.collision_bodies and name2 in self.collision_bodies:
-                    continue
-                if name1 not in self.collision_bodies and name2 not in self.collision_bodies:
-                    continue
-                if contact.dist < -1e-4:
-                    collision_free = False
-                    break
-        return collision_free
+            if contact.dist < -1e-4:
+                return False
+                
+        return True
 
     def is_collision_free(self, configuration: np.ndarray) -> bool:
         qpos_save = self.data.qpos.copy()
@@ -136,6 +164,33 @@ class FrankaEnvironment(BaseEnvironment):
         mujoco.mj_forward(self.model, self.data)
         
         return collision_free
+    
+    def is_collision_free_no_restore(self, configuration: np.ndarray) -> bool:
+        """Check collision without saving/restoring state. Faster for batch checks."""
+        self.data.qpos[:7] = configuration
+        self.data.qvel[:7] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        return self.check_collisions()
+    
+    def is_path_collision_free(self, config1: np.ndarray, config2: np.ndarray, steps: int = 5) -> bool:
+        """Check if path between two configs is collision-free. Optimized batch version."""
+        qpos_save = self.data.qpos.copy()
+        qvel_save = self.data.qvel.copy()
+        
+        result = True
+        for i in range(steps + 1):
+            alpha = i / steps
+            config = (1 - alpha) * config1 + alpha * config2
+            if not self.is_collision_free_no_restore(config):
+                result = False
+                break
+        
+        # Restore state once at the end
+        self.data.qpos[:] = qpos_save
+        self.data.qvel[:] = qvel_save
+        mujoco.mj_forward(self.model, self.data)
+        
+        return result
 
     def get_object_id(self, object_name: str) -> int:
         object_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, object_name)
