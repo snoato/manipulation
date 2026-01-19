@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 import argparse
 import numpy as np
+from collections import deque
 try:
     import wandb
 except ImportError:
@@ -143,6 +144,94 @@ def parse_args():
     
     return parser.parse_args()
 
+def validate_grasp(env, planner, target_obj, ignored_objects=None):
+    """
+    Check if a target object can be grasped given a set of ignored objects (collision exceptions).
+    
+    Args:
+        env: FrankaEnvironment
+        planner: RRTStar planner
+        target_obj: Name of target object
+        ignored_objects: List of object names to ignore during collision checking
+    """
+    if ignored_objects is None:
+        ignored_objects = []
+        
+    # Save current collision state
+    saved_exceptions = env.collision_exceptions.copy()
+    
+    try:
+        # 1. Apply collision exceptions (ignore specified objects + target itself for grasp)
+        env.collision_exceptions = list(set(ignored_objects + [target_obj]))
+        
+        # 2. Get approach pose for target
+        obj_pos = env.get_object_position(target_obj)
+        approach_pose, approach_ori = env.get_approach_pose(obj_pos)
+        
+        # 3. Plan to approach pose
+        # Lower max_iterations for validation speed (e.g. 200 or 500)
+        path = planner.plan_to_pose(approach_pose, approach_ori, max_iterations=200)
+        
+        return path is not None
+        
+    except Exception as e:
+        print(f"Validation error: {e}")
+        return False
+    finally:
+        # Restore collision state
+        env.collision_exceptions = saved_exceptions
+
+def find_shortest_plan(env, planner, target_obj, all_objects):
+    """
+    Find shortest sequence of object removals to reach target using BFS.
+    
+    Args:
+        env: FrankaEnvironment
+        planner: RRTStar planner
+        target_obj: Name of target object
+        all_objects: List of all object names in the scene
+        
+    Returns:
+        List of object names to remove (pick) in order, ending with target_obj.
+        Returns None if no plan found.
+    """
+    all_objs_set = set(all_objects)
+    if target_obj not in all_objs_set:
+        return None
+        
+    # State: (objects_currently_on_table, plan_sequence)
+    # Using frozenset for visited check
+    start_state = frozenset(all_objs_set)
+    queue = deque([(start_state, [])])
+    visited = {start_state}
+    
+    while queue:
+        current_objects, plan = queue.popleft()
+        
+        # Check if target is reachable in current state
+        # Ignored objects are those NOT in current_objects
+        ignored = list(all_objs_set - current_objects)
+        
+        if validate_grasp(env, planner, target_obj, ignored):
+            # Found a solution! Plan is sequence of removals + target
+            return plan + [target_obj]
+            
+        # Try to remove other objects
+        # We can only remove an object if it is reachable/graspable in current state
+        # Sorted for determinism
+        potential_removals = sorted([o for o in current_objects if o != target_obj])
+        
+        for obj in potential_removals:
+            # Check if we can pick 'obj'
+            if validate_grasp(env, planner, obj, ignored):
+                new_objects = current_objects - {obj}
+                if new_objects not in visited:
+                    visited.add(new_objects)
+                    new_plan = plan + [obj]
+                    queue.append((new_objects, new_plan))
+                    
+    return None
+
 def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     """
     Generate a dataset split.
@@ -180,10 +269,16 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     if not args.no_viz:
         print(f"   Visualization directory: {viz_dir}")
 
+    # Initialize RRTStar planner for check
+    planner = RRTStar(env)
+
     start_time = time.time()
     
-    for i in range(num_examples):
-        config_num = i+1
+    i = 0
+    generated_count = 0
+    
+    while generated_count < num_examples:
+        config_num = generated_count + 1
         
         # Sample random state
         n_cylinders = np.random.randint(args.min_objects, args.max_objects + 1)
@@ -191,18 +286,45 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
         
         # Ground state to get object details
         grounded_state = state_manager.ground_state()
-        actual_cylinders = len(grounded_state['cylinders'])
+        cylinders = sorted(grounded_state['cylinders'].keys())
+        target_cylinder = np.random.choice(cylinders)
+
+        # 1. First fast check: Is target reachable if it was alone? (Sanity check)
+        # If the target itself is in a bad pose (too far, etc), skip immediately
+        all_others = [c for c in cylinders if c != target_cylinder]
+        if not validate_grasp(env, planner, target_cylinder, all_others):
+            # print("  [Skip] Target unreachable even in isolation")
+            continue
+            
+        # 2. Find shortest plan
+        plan_sequence = find_shortest_plan(env, planner, target_cylinder, cylinders)
+        
+        if plan_sequence is None:
+            # print("  [Skip] No valid plan found")
+            continue
+            
+        # If valid plan found, we accept this configuration
+        actual_cylinders = len(cylinders)
         
         # Generate PDDL problem
-        cylinders = sorted(state_manager.ground_state()['cylinders'].keys())
-        target_cylinder = np.random.choice(cylinders)
         problem_path = problem_dir / f"config_{config_num}.pddl"
         state_manager.generate_pddl_problem(
             f"config-{config_num}",
             problem_path,
             f"(holding {target_cylinder})"
         )
-        
+
+        # Generate Plan file
+        plan_path = problem_dir / f"config_{config_num}.pddl.plan"
+        with open(plan_path, "w") as f:
+            for action_obj in plan_sequence:
+                f.write(f"(pick {action_obj})\n")
+                f.write(f"(drop {action_obj})\n")
+            f.write(f"; Total actions: {len(plan_sequence)*2}\n")
+            f.write(f"; Target: {target_cylinder}\n")
+            f.write(f"; Objects: {', '.join(cylinders)}\n")
+            f.write(f"; Total time to generate: {time.time() - start_time:.2f}s\n")
+
         # Visualize if enabled
         viz_path = None
         if not args.no_viz:
@@ -210,16 +332,17 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
             visualize_grid_state(
                 state_manager,
                 save_path=viz_path,
-                title=f"{split_name.capitalize()} Configuration {config_num}",
+                title=f"{split_name.capitalize()} Conf {config_num} (len={len(plan_sequence)})",
                 target_cylinder=target_cylinder
             )
         
         # Log to wandb
         if wandb_run is not None:
             log_data = {
-                f"{split_name}/progress": (i + 1) / num_examples,
+                f"{split_name}/progress": (generated_count + 1) / num_examples,
                 f"{split_name}/config_num": config_num,
                 f"{split_name}/n_objects": actual_cylinders,
+                f"{split_name}/plan_length": len(plan_sequence)
             }
             
             # Log visualization image if available
@@ -232,12 +355,16 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
         if args.viewer:
             env.rest(2.0)
         
+        generated_count += 1
+        i += 1
+        
         # Print progress estimate
-        if (i + 1) % 10 == 0 or i == 0 or i == num_examples - 1:
+        if generated_count % 10 == 0 or generated_count == 1:
             elapsed = time.time() - start_time
-            avg_time = elapsed / (i + 1)
-            remaining = avg_time * (num_examples - i - 1)
-            print(f"   [{split_name}] {i+1}/{num_examples} | Saved: {problem_path.name} | "
+            avg_time = elapsed / generated_count
+            remaining = avg_time * (num_examples - generated_count)
+            print(f"   [{split_name}] {generated_count}/{num_examples} | Saved: {problem_path.name} | "
+                  f"Len: {len(plan_sequence)} | "
                   f"Elapsed: {elapsed:.1f}s | "
                   f"Est. remaining: {remaining:.1f}s")
 
