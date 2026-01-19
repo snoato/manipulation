@@ -290,7 +290,7 @@ def worker_generate(worker_id, split_name, start_idx, count, args_dict, result_q
     planner = RRTStar(env)
     
     # Output directories
-    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
     problem_dir = output_base / split_name
     viz_dir = output_base / split_name / "viz"
     
@@ -465,7 +465,7 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     state_manager = StateManager(grid, env)
     
     # Create output directories
-    output_base = Path(args.output_dir) / "tabletop-domain"
+    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
     # Structure: {output_dir}/tabletop-domain/{split}/
     problem_dir = output_base / split_name
     viz_dir = output_base / split_name / "viz"
