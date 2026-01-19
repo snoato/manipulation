@@ -39,6 +39,9 @@ GRID_OFFSET_Y=0.02
 # Random seed (set to a specific value for reproducibility, or leave empty for random)
 SEED=""
 
+# Parallelization (0 = use all available CPUs)
+NUM_WORKERS=0
+
 # Wandb configuration
 ENABLE_WANDB=true
 WANDB_PROJECT="manipulation-data-generation"
@@ -102,6 +105,9 @@ CMD="${CMD} --grid-offset-y ${GRID_OFFSET_Y}"
 if [ -n "${SEED}" ]; then
     CMD="${CMD} --seed ${SEED}"
 fi
+
+# Add num-workers
+CMD="${CMD} --num-workers ${NUM_WORKERS}"
 
 # Add wandb flags if enabled
 if [ "${ENABLE_WANDB}" = true ]; then

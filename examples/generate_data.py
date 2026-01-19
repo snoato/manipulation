@@ -5,6 +5,7 @@ import time
 import argparse
 import numpy as np
 from collections import deque
+import multiprocessing as mp
 try:
     import wandb
 except ImportError:
@@ -26,6 +27,7 @@ _DEFAULT_TARGETS_MIN = 3
 _DEFAULT_GRID_SIZE = (0.4, 0.3)  # 40cm x 40cm
 _DEFAULT_CELL_SIZE = 0.04  # 2cm cells
 _DEFAULT_GRID_OFFSET_Y = 0.02
+_DEFAULT_NUM_WORKERS = 1
 
 
 def parse_args():
@@ -142,6 +144,14 @@ def parse_args():
         help="Random seed for reproducibility"
     )
     
+    # Parallelization
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=_DEFAULT_NUM_WORKERS,
+        help="Number of parallel worker processes (0 = use all CPUs)"
+    )
+    
     return parser.parse_args()
 
 def validate_grasp(env, planner, target_obj, ignored_objects=None):
@@ -152,7 +162,7 @@ def validate_grasp(env, planner, target_obj, ignored_objects=None):
         env: FrankaEnvironment
         planner: RRTStar planner
         target_obj: Name of target object
-        ignored_objects: List of object names to ignore during collision checking
+        ignored_objects: List of object names to ignore during collision checking (objects already removed)
     """
     if ignored_objects is None:
         ignored_objects = []
@@ -161,10 +171,11 @@ def validate_grasp(env, planner, target_obj, ignored_objects=None):
     saved_exceptions = env.collision_exceptions.copy()
     
     try:
-        # 1. Apply collision exceptions (ignore specified objects + target itself for grasp)
-        env.collision_exceptions = list(set(ignored_objects + [target_obj]))
+        # Apply collision exceptions: ignore removed objects + target itself for grasp
+        # Use set_collision_exceptions to properly sync cached IDs
+        env.set_collision_exceptions(list(set(ignored_objects + [target_obj])))
         
-        # 2. Get approach pose for target
+        # Get approach pose for target
         obj_pos = env.get_object_position(target_obj)
         approach_pose, approach_ori = env.get_approach_pose(obj_pos)
         
@@ -178,8 +189,8 @@ def validate_grasp(env, planner, target_obj, ignored_objects=None):
         print(f"Validation error: {e}")
         return False
     finally:
-        # Restore collision state
-        env.collision_exceptions = saved_exceptions
+        # Restore collision state using setter to sync cached IDs
+        env.set_collision_exceptions(saved_exceptions)
 
 def find_shortest_plan(env, planner, target_obj, all_objects):
     """
@@ -231,6 +242,204 @@ def find_shortest_plan(env, planner, target_obj, all_objects):
                     queue.append((new_objects, new_plan))
                     
     return None
+
+
+def worker_generate(worker_id, split_name, start_idx, count, args_dict, result_queue):
+    """
+    Worker function that generates a subset of examples.
+    
+    Each worker creates its own environment and planner instances.
+    
+    Args:
+        worker_id: Unique worker identifier
+        split_name: Dataset split name (train/test/validation)
+        start_idx: Starting config index for this worker
+        count: Number of examples this worker should generate
+        args_dict: Parsed arguments as dict (for pickling)
+        result_queue: Queue to report results back to main process
+    """
+    # Reconstruct args namespace from dict
+    class Args:
+        pass
+    args = Args()
+    for k, v in args_dict.items():
+        setattr(args, k, v)
+    
+    # Set unique seed for this worker
+    if args.seed is not None:
+        worker_seed = args.seed + worker_id * 10000 + hash(split_name) % 10000
+    else:
+        worker_seed = int(time.time() * 1000) % (2**31) + worker_id * 10000
+    np.random.seed(worker_seed)
+    
+    # Initialize environment (each worker gets its own)
+    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    
+    # Create grid domain
+    grid = GridDomain(
+        model=env.model,
+        cell_size=args.cell_size,
+        working_area=(args.grid_width, args.grid_height),
+        table_body_name="simple_table",
+        table_geom_name="table_surface",
+        grid_offset_y=args.grid_offset_y
+    )
+    
+    # Create state manager and planner
+    state_manager = StateManager(grid, env)
+    planner = RRTStar(env)
+    
+    # Output directories
+    output_base = Path(args.output_dir) / "tabletop-domain"
+    problem_dir = output_base / split_name
+    viz_dir = output_base / split_name / "viz"
+    
+    start_time = time.time()
+    generated_count = 0
+    
+    while generated_count < count:
+        config_num = start_idx + generated_count + 1
+        
+        # Sample random state
+        n_cylinders = np.random.randint(args.min_objects, args.max_objects + 1)
+        state_manager.sample_random_state(n_cylinders=n_cylinders)
+        
+        grounded_state = state_manager.ground_state()
+        cylinders = sorted(grounded_state['cylinders'].keys())
+        target_cylinder = np.random.choice(cylinders)
+
+        # Fast check: target reachable in isolation
+        all_others = [c for c in cylinders if c != target_cylinder]
+        if not validate_grasp(env, planner, target_cylinder, all_others):
+            continue
+            
+        # Find shortest plan
+        plan_sequence = find_shortest_plan(env, planner, target_cylinder, cylinders)
+        
+        if plan_sequence is None:
+            continue
+            
+        actual_cylinders = len(cylinders)
+        
+        # Generate PDDL problem
+        problem_path = problem_dir / f"config_{config_num}.pddl"
+        state_manager.generate_pddl_problem(
+            f"config-{config_num}",
+            problem_path,
+            f"(holding {target_cylinder})"
+        )
+
+        # Generate Plan file
+        plan_path = problem_dir / f"config_{config_num}.pddl.plan"
+        with open(plan_path, "w") as f:
+            # For obstacles: pick then drop (to clear the way)
+            for action_obj in plan_sequence[:-1]:
+                f.write(f"(pick {action_obj})\n")
+                f.write(f"(drop {action_obj})\n")
+            # For target: only pick (goal is holding)
+            f.write(f"(pick {plan_sequence[-1]})\n")
+            f.write(f"; Total actions: {len(plan_sequence)*2 - 1}\n")
+            f.write(f"; Target: {target_cylinder}\n")
+            f.write(f"; Objects: {', '.join(cylinders)}\n")
+        
+        # Visualize if enabled
+        if not args.no_viz:
+            viz_path = viz_dir / f"config_{config_num}.png"
+            visualize_grid_state(
+                state_manager,
+                save_path=viz_path,
+                title=f"{split_name.capitalize()} Conf {config_num} (len={len(plan_sequence)})",
+                target_cylinder=target_cylinder
+            )
+        
+        generated_count += 1
+        
+        # Progress update every 10 configs
+        if generated_count % 10 == 0 or generated_count == 1:
+            elapsed = time.time() - start_time
+            print(f"   [Worker {worker_id}/{split_name}] {generated_count}/{count} | "
+                  f"Config {config_num} | Len: {len(plan_sequence)} | "
+                  f"Elapsed: {elapsed:.1f}s")
+
+    total_time = time.time() - start_time
+    result_queue.put({
+        'worker_id': worker_id,
+        'split_name': split_name,
+        'generated': generated_count,
+        'time': total_time
+    })
+    
+    # Cleanup
+    env.close()
+
+
+def generate_dataset_parallel(split_name, num_examples, args, num_workers):
+    """
+    Generate a dataset split using multiple worker processes.
+    """
+    if num_examples <= 0:
+        print(f"Skipping {split_name} split (0 examples requested)")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"Generating {split_name} dataset ({num_examples} examples) with {num_workers} workers")
+    print(f"{'='*70}")
+    
+    # Create output directories (main process)
+    output_base = Path(args.output_dir) / "tabletop-domain"
+    problem_dir = output_base / split_name
+    viz_dir = output_base / split_name / "viz"
+    
+    problem_dir.mkdir(parents=True, exist_ok=True)
+    if not args.no_viz:
+        viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"   Problem directory: {problem_dir}")
+    if not args.no_viz:
+        print(f"   Visualization directory: {viz_dir}")
+
+    # Convert args to dict for pickling
+    args_dict = vars(args)
+    
+    # Distribute work among workers
+    base_count = num_examples // num_workers
+    remainder = num_examples % num_workers
+    
+    result_queue = mp.Queue()
+    processes = []
+    
+    start_idx = 0
+    start_time = time.time()
+    
+    for worker_id in range(num_workers):
+        # Give first 'remainder' workers one extra example
+        worker_count = base_count + (1 if worker_id < remainder else 0)
+        
+        if worker_count > 0:
+            p = mp.Process(
+                target=worker_generate,
+                args=(worker_id, split_name, start_idx, worker_count, args_dict, result_queue)
+            )
+            processes.append(p)
+            p.start()
+            start_idx += worker_count
+    
+    # Wait for all workers to complete
+    for p in processes:
+        p.join()
+    
+    # Collect results
+    results = []
+    while not result_queue.empty():
+        results.append(result_queue.get())
+    
+    total_time = time.time() - start_time
+    total_generated = sum(r['generated'] for r in results)
+    
+    print(f"   {split_name} complete: {total_generated} configs in {total_time:.1f}s")
+    
+    return results
+
 
 def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
     """
@@ -317,10 +526,11 @@ def generate_dataset(split_name, num_examples, env, grid, args, wandb_run=None):
         # Generate Plan file
         plan_path = problem_dir / f"config_{config_num}.pddl.plan"
         with open(plan_path, "w") as f:
-            for action_obj in plan_sequence:
+            for action_obj in plan_sequence[:-1]:
                 f.write(f"(pick {action_obj})\n")
                 f.write(f"(drop {action_obj})\n")
-            f.write(f"; Total actions: {len(plan_sequence)*2}\n")
+            f.write(f"(pick {plan_sequence[-1]})\n")
+            f.write(f"; Total actions: {len(plan_sequence)*2 - 1}\n")
             f.write(f"; Target: {target_cylinder}\n")
             f.write(f"; Objects: {', '.join(cylinders)}\n")
             f.write(f"; Total time to generate: {time.time() - start_time:.2f}s\n")
@@ -380,7 +590,17 @@ def main():
         np.random.seed(args.seed)
         print(f"Random seed set to: {args.seed}")
     
-    # Initialize wandb if requested
+    # Determine number of workers
+    num_workers = args.num_workers
+    if num_workers <= 0:
+        num_workers = mp.cpu_count()
+    
+    # Viewer mode forces single worker
+    if args.viewer and num_workers > 1:
+        print("WARNING: Viewer mode enabled, forcing single worker")
+        num_workers = 1
+    
+    # Initialize wandb if requested (main process only)
     wandb_run = None
     if args.wandb:
         if wandb is None:
@@ -402,6 +622,7 @@ def main():
                     "cell_size": args.cell_size,
                     "grid_offset_y": args.grid_offset_y,
                     "seed": args.seed,
+                    "num_workers": num_workers,
                 }
             )
             print("W&B logging enabled")
@@ -417,50 +638,58 @@ def main():
     print(f"  Objects per config: {args.min_objects}-{args.max_objects}")
     print(f"  Grid size: {args.grid_width}m x {args.grid_height}m")
     print(f"  Cell size: {args.cell_size}m")
+    print(f"  Workers: {num_workers}")
     print(f"  Viewer: {args.viewer}")
     print(f"  Visualizations: {not args.no_viz}")
     
-    # Initialize environment
-    print("\n1. Loading environment...")
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
-    
-    # Create grid domain
-    print("2. Creating grid domain...")
-    grid = GridDomain(
-        model=env.model,
-        cell_size=args.cell_size,
-        working_area=(args.grid_width, args.grid_height),
-        table_body_name="simple_table",
-        table_geom_name="table_surface",
-        grid_offset_y=args.grid_offset_y
-    )
-    
-    info = grid.get_grid_info()
-    print(f"   Grid: {info['grid_dimensions'][0]}x{info['grid_dimensions'][1]} cells ({info['cell_size']*100:.1f}cm)")
-    
-    # Launch viewer if requested
-    if args.viewer:
-        viewer = env.launch_viewer()
-        if not viewer.is_running():
-            raise Exception("no viewer available")
-        print("   Viewer launched")
-    
-    # Create tabletop-domain directory and copy domain.pddl
+    # Create tabletop-domain directory and copy domain.pddl (main process)
     import shutil
-    output_base = Path(args.output_dir) / "manipulation" / "tabletop-domain"
+    output_base = Path(args.output_dir) / "tabletop-domain"
     output_base.mkdir(parents=True, exist_ok=True)
     
     domain_src = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "domain.pddl"
     domain_dst = output_base / "domain.pddl"
-    shutil.copy(domain_src, domain_dst)
-    print(f"   Copied domain.pddl to {domain_dst}")
+    if domain_src.exists():
+        shutil.copy(domain_src, domain_dst)
+        print(f"   Copied domain.pddl to {domain_dst}")
         
     # Generate splits
     start_total = time.time()
     
-    generate_dataset("train", args.num_train, env, grid, args, wandb_run)
-    generate_dataset("test", args.num_test, env, grid, args, wandb_run)
-    generate_dataset("validation", args.num_val, env, grid, args, wandb_run)
+    if num_workers > 1:
+        # Parallel mode
+        generate_dataset_parallel("train", args.num_train, args, num_workers)
+        generate_dataset_parallel("test", args.num_test, args, num_workers)
+        generate_dataset_parallel("validation", args.num_val, args, num_workers)
+    else:
+        # Single-threaded mode (with viewer support)
+        print("\n1. Loading environment...")
+        env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+        
+        print("2. Creating grid domain...")
+        grid = GridDomain(
+            model=env.model,
+            cell_size=args.cell_size,
+            working_area=(args.grid_width, args.grid_height),
+            table_body_name="simple_table",
+            table_geom_name="table_surface",
+            grid_offset_y=args.grid_offset_y
+        )
+        
+        info = grid.get_grid_info()
+        print(f"   Grid: {info['grid_dimensions'][0]}x{info['grid_dimensions'][1]} cells ({info['cell_size']*100:.1f}cm)")
+        
+        if args.viewer:
+            viewer = env.launch_viewer()
+            if not viewer.is_running():
+                raise Exception("no viewer available")
+            print("   Viewer launched")
+        
+        generate_dataset("train", args.num_train, env, grid, args, wandb_run)
+        generate_dataset("test", args.num_test, env, grid, args, wandb_run)
+        generate_dataset("validation", args.num_val, env, grid, args, wandb_run)
+        
+        env.close()
     
     # Summary
     total_time = time.time() - start_total
@@ -481,6 +710,7 @@ def main():
         })
         wandb.finish()
         print("W&B run finished")
+
 
 if __name__ == "__main__":
     main()
