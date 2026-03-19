@@ -14,12 +14,12 @@ def main():
     # Create output directory for images
     _OUTPUT_DIR.mkdir(exist_ok=True)
     print(f"Saving images to: {_OUTPUT_DIR}")
-    
+
     env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
-    
+
     # Create camera instance for capturing images
     camera = MujocoCamera(env, width=640, height=480)
-    
+
     # Initialize RRT* planner
     planner = RRTStar(env)
     planner.max_iterations = 1000
@@ -32,12 +32,12 @@ def main():
     capture_count = 0
     running = True
     step = 0
-    
+
     print(f"\nStarting grasping sequence for {len(targets)} objects...")
     print("="*60)
-    
+
     env.rest(2.0)
-    
+
     while running:
         if target is None and len(targets) == 0:
             print("\n" + "="*60)
@@ -53,8 +53,8 @@ def main():
             target_pos = env.get_object_position(target)
             step = 0
             print(f"\n>>> Target: {target}")
-        
-        if target is not None: 
+
+        if target is not None:
             if env.controller.get_status() == ControllerStatus.IDLE:
                 step += 1
 
@@ -64,35 +64,27 @@ def main():
                     path = planner.plan_to_pose(
                         target_pose, target_orientation, dt=dt, max_iterations=2000
                     )
-                    
+
                     if path is not None:
                         print(f"        Path found! Executing...")
-                        smoothed = planner.smooth_path(path)
-                        interpolated = env.controller.interpolate_linear_path(
-                            smoothed, step_size=0.05
-                        )
-                        env.controller.follow_trajectory(interpolated)
+                        env.execute_path(path, planner)
                     else:
                         print("        ✗ Failed to plan approach path!")
                         step = 7
-                
+
                 if step == 2:
                     print(f"  [2/7] Planning grasp...")
                     target_pose, target_orientation = env.get_grasp_pose(target_pos)
                     path = planner.plan_to_pose(
                         target_pose, target_orientation, dt=dt, max_iterations=1000
                     )
-                    
+
                     if path is not None:
-                        smoothed = planner.smooth_path(path)
-                        interpolated = env.controller.interpolate_linear_path(
-                            smoothed, step_size=0.05
-                        )
-                        env.controller.follow_trajectory(interpolated)
+                        env.execute_path(path, planner)
                     else:
                         print("        ✗ Failed to plan grasp path!")
                         step = 7
-                
+
                 if step == 3:
                     print(f"  [3/7] Closing gripper...")
                     env.controller.close_gripper()
@@ -104,30 +96,22 @@ def main():
                     path = planner.plan_to_pose(
                         target_pose, target_orientation, dt=dt, max_iterations=2000
                     )
-                    
+
                     if path is not None:
-                        smoothed = planner.smooth_path(path)
-                        interpolated = env.controller.interpolate_linear_path(
-                            smoothed, step_size=0.05
-                        )
-                        env.controller.follow_trajectory(interpolated)
+                        env.execute_path(path, planner)
                     else:
                         print("        ✗ Failed to plan lift path!")
                         step = 7
-                
+
                 if step == 5:
                     print(f"  [5/7] Planning dropoff...")
                     target_pose, target_orientation = env.get_dropoff_pose()
                     path = planner.plan_to_pose(
                         target_pose, target_orientation, dt=dt, max_iterations=3000
                     )
-                    
+
                     if path is not None:
-                        smoothed = planner.smooth_path(path)
-                        interpolated = env.controller.interpolate_linear_path(
-                            smoothed, step_size=0.05
-                        )
-                        env.controller.follow_trajectory(interpolated)
+                        env.execute_path(path, planner)
                     else:
                         print("        ✗ Failed to plan dropoff path!")
                         step = 7
@@ -136,18 +120,18 @@ def main():
                     print(f"  [6/7] Opening gripper...")
                     env.controller.open_gripper()
                     env.clear_collision_exceptions()
-                    
+
                     # Capture image after successful grasp
                     capture_count += 1
                     print(f"  [7/7] 📸 Capturing images...")
-                    
+
                     # Capture from all three cameras
                     for cam_name in ["top_camera", "side_camera", "front_camera"]:
                         filename = _OUTPUT_DIR / f"grasp_{capture_count:02d}_{target}_{cam_name}.png"
                         camera.save_image(cam_name, str(filename))
-                    
+
                     print(f"        ✓ Saved 3 images (grasp_{capture_count:02d}_*)")
-                
+
                 if step == 7:
                     target = None
                     step = 0
@@ -160,7 +144,7 @@ def main():
                 env.rest(2.0)
 
         env.controller.step()
-    
+
     env.close()
     print(f"\n✓ Total images captured: {capture_count * 3}")
     print(f"✓ Saved to: {_OUTPUT_DIR}/")

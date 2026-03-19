@@ -114,15 +114,11 @@ def main():
                         )
                         
                         if path is not None:
-                            smoothed = planner.smooth_path(path)
-                            interpolated = env.controller.interpolate_linear_path(
-                                smoothed, step_size=0.05
-                            )
-                            env.controller.follow_trajectory(interpolated)
+                            env.execute_path(path, planner)
                         else:
                             print("    Failed to plan approach!")
                             step = 9
-                    
+
                     elif step == 2:
                         print(f"  [{target}] Planning grasp...")
                         target_pos = env.get_object_position(target)  # Get fresh position
@@ -130,13 +126,9 @@ def main():
                         path = planner.plan_to_pose(
                             target_pose, target_orientation, dt=dt, max_iterations=1000
                         )
-                        
+
                         if path is not None:
-                            smoothed = planner.smooth_path(path)
-                            interpolated = env.controller.interpolate_linear_path(
-                                smoothed, step_size=0.02  # Slower approach for more precision
-                            )
-                            env.controller.follow_trajectory(interpolated)
+                            env.execute_path(path, planner, step_size=0.02)
                         else:
                             print("    Failed to plan grasp!")
                             step = 9
@@ -164,28 +156,20 @@ def main():
                         )
                         
                         if path is not None:
-                            smoothed = planner.smooth_path(path)
-                            interpolated = env.controller.interpolate_linear_path(
-                                smoothed, step_size=0.05
-                            )
-                            env.controller.follow_trajectory(interpolated)
+                            env.execute_path(path, planner)
                         else:
                             print("    Failed to plan lift!")
                             step = 9
-                    
+
                     elif step == 6:
                         print(f"  [{target}] Planning dropoff...")
                         target_pose, target_orientation = env.get_dropoff_pose()
                         path = planner.plan_to_pose(
                             target_pose, target_orientation, dt=dt, max_iterations=3000
                         )
-                        
+
                         if path is not None:
-                            smoothed = planner.smooth_path(path)
-                            interpolated = env.controller.interpolate_linear_path(
-                                smoothed, step_size=0.05
-                            )
-                            env.controller.follow_trajectory(interpolated)
+                            env.execute_path(path, planner)
                         else:
                             print("    Failed to plan dropoff!")
                             step = 9
