@@ -64,7 +64,7 @@ def main():
         
         points, colors = camera.get_pointcloud(
             cam_name,
-            num_samples=2000,
+            num_samples=4000,
             min_depth=0.3,
             max_depth=3.0
         )
