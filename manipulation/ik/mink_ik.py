@@ -19,9 +19,9 @@ class MinkIK(BaseIK):
         self.data = data
         self.aux_tasks = []
         self.solver = "quadprog"
-        self.pos_threshold = 0.007
+        self.pos_threshold = 0.002  # tightened from 0.007 → 2 mm
         self.ori_threshold = 1e-3
-        self.max_iters = 600
+        self.max_iters = 1000       # increased from 600 to handle tighter tolerance
         self.ee_task = None
         self.posture_task = None
         self.target_name = target_name
