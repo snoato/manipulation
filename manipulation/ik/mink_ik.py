@@ -81,9 +81,6 @@ class MinkIK(BaseIK):
 
             if pos_achieved and ori_achieved:
                 return True
-        print("MINK IK failed to converge within the maximum iterations"
-              f" (pos error: {np.linalg.norm(err[:3]):.6f},"
-              f" ori error: {np.linalg.norm(err[3:]):.6f}))")
         return False
     
     def update_configuration(self, qpos: np.ndarray):

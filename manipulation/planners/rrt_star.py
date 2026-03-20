@@ -139,18 +139,14 @@ class RRTStar(BaseMotionPlanner):
             max_iterations = self.max_iterations
         
         if not self.env.is_collision_free(start_config):
-            print("Start configuration is in collision!")
             return None
-        
+
         if not self.env.is_collision_free(goal_config):
-            print("Goal configuration is in collision!")
             return None
-        
+
         start_node = Node(start_config)
         tree = [start_node]
         goal_node = None
-        
-        print(f"Planning path with RRT* (max iterations: {max_iterations})...")
         
         for iteration in range(max_iterations):
             # Sample configuration
@@ -192,12 +188,9 @@ class RRTStar(BaseMotionPlanner):
                     break
         
         if goal_node is None:
-            print("Failed to find path to goal.")
             return None
-        
-        path = self._extract_path(goal_node)
-        print(f"Path found with {len(path)} waypoints, iteration: {iteration + 1}")
-        return path
+
+        return self._extract_path(goal_node)
     
     def _extract_path(self, goal_node: Node) -> List[np.ndarray]:
         path = []
@@ -255,7 +248,6 @@ class RRTStar(BaseMotionPlanner):
                 self.ik.update_configuration(self.data.qpos)
             else:
                 # Subsequent attempts: move robot partway to a neutral config
-                print(f"  Retrying IK (attempt {attempt + 1}/{max_ik_retries})...")
                 
                 # Use a neutral configuration as fallback (middle of joint ranges)
                 neutral_config = (self.joint_limits_low + self.joint_limits_high) / 2.0
@@ -282,8 +274,6 @@ class RRTStar(BaseMotionPlanner):
                 
                 # Plan from original start to IK solution
                 return self.plan(start_config, goal_config, max_iterations)
-        
-        print(f"  IK failed to converge after {max_ik_retries} attempts")
         
         # Restore original configuration
         self.data.qpos[:7] = start_config
