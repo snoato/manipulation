@@ -110,12 +110,16 @@ class PositionController(BaseController):
         self._waypoints = []
 
     def open_gripper(self):
-        self.data.ctrl[7] = 0.04
-        self.status = ControllerStatus.GRASPING
+        # 255.0 matches the initial open ctrl value so the gripper physically moves.
+        # Status stays IDLE so follow_trajectory is not blocked; callers that need to
+        # wait for full opening should poll qvel[7] (e.g. PickPlaceExecutor._wait_gripper_open).
+        self.data.ctrl[7] = 255.0
+        self.status = ControllerStatus.IDLE
 
     def close_gripper(self):
         self.data.ctrl[7] = -0.2
-        self.status = ControllerStatus.GRASPING
+        # Status stays IDLE; callers poll qvel[7] via _wait_gripper_closed.
+        self.status = ControllerStatus.IDLE
 
     def follow_trajectory(
         self,
