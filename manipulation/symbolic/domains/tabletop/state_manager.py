@@ -120,42 +120,95 @@ class StateManager(BaseStateManager):
     def set_from_grounded_state(self, state: Dict[str, any]):
         """
         Set MuJoCo state from grounded symbolic representation.
-        
+
         Takes the same dictionary format as returned by ground_state() and
         configures the MuJoCo simulation accordingly.
-        
+
+        When the state contains a 'holding' entry the held cylinder is placed
+        at the end-effector and registered as a collision-held body so that
+        subsequent RRT* collision checks treat it as part of the arm geometry.
+
         Args:
             state: Dictionary with 'cylinders', 'gripper_empty', and 'holding' keys
         """
+        from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
+
+        # Clear any previous kinematic attachment before loading new state
+        self.env.detach_object()
+
         # Hide all cylinders first
         for cyl_idx in range(30):
             self._hide_cylinder(cyl_idx)
-        
+
         # Place cylinders at the centroid of their occupied cells
         for cyl_name, cells in state.get('cylinders', {}).items():
-            # Extract cylinder index
             cyl_idx = int(cyl_name.split('_')[1])
-            
-            # Compute centroid of occupied cells
             cell_centers = [self.grid.cells[cell]['center'] for cell in cells]
             centroid_x = np.mean([c[0] for c in cell_centers])
             centroid_y = np.mean([c[1] for c in cell_centers])
-            
-            # Get cylinder height - position center slightly above table to avoid initial contact
             _, height = self.CYLINDER_SPECS[cyl_idx]
             centroid_z = self.grid.table_height + height + 0.002
-            
-            # Set cylinder position
             self._set_cylinder_position(cyl_idx, centroid_x, centroid_y, centroid_z)
-        
-        # Update gripper holding state
-        self.gripper_holding = state.get('holding', None)
 
+        # Reset arm to home
         self.env.data.qpos[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
         self.env.data.ctrl[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
-        
-        # Zero out all velocities to prevent wobbling
         self.env.reset_velocities()
+
+        # Update gripper holding state
+        holding = state.get('holding', None)
+        self.gripper_holding = holding
+
+        # Clear any previous held-body registration
+        self.env.clear_collision_held_body()
+
+        if holding is not None:
+            cyl_idx = int(holding.split('_')[1])
+
+            # Move the arm into a canonical FRONT-grasp transport configuration via IK
+            # so the held cylinder appears naturally gripped between the fingers.
+            # FRONT quat: EE body-Z along world +Y (approach from -Y), fingers along X.
+            front_quat = np.array([-0.5, 0.5, 0.5, 0.5])
+            cell_xs = [info['center'][0] for info in self.grid.cells.values()]
+            cell_ys = [info['center'][1] for info in self.grid.cells.values()]
+            transport_pos = np.array([
+                float(np.mean(cell_xs)),
+                float(np.mean(cell_ys)) - 0.05,   # slightly toward robot
+                self.grid.table_height + 0.35,     # 35 cm above table
+            ])
+            dt = self.env.model.opt.timestep
+            self.env.ik.update_configuration(self.env.data.qpos)
+            self.env.ik.set_target_position(transport_pos, front_quat)
+            if self.env.ik.converge_ik(dt):
+                self.env.data.qpos[:7] = self.env.ik.configuration.q[:7]
+                self.env.data.ctrl[:7] = self.env.data.qpos[:7]
+            # else: home config is kept as fallback
+
+            # Compute EE pose at the (IK-solved or fallback) arm config
+            mujoco.mj_forward(self.env.model, self.env.data)
+            ee_pos = self.env.data.site_xpos[self.env._ee_site_id].copy()
+            ee_mat = self.env.data.site_xmat[self.env._ee_site_id].reshape(3, 3).copy()
+
+            # rel_pos: cylinder centre sits GRASP_CONTACT_OFFSET along EE +Z (EE frame)
+            rel_pos = np.array([0.0, 0.0, GRASP_CONTACT_OFFSET])
+            # rel_mat: cylinder is upright in world (identity), so in EE frame → R_ee.T
+            rel_mat = ee_mat.T
+
+            # Place the cylinder physically at the EE
+            cyl_world_pos = ee_pos + ee_mat @ rel_pos
+            self._set_cylinder_position(
+                cyl_idx, cyl_world_pos[0], cyl_world_pos[1], cyl_world_pos[2]
+            )
+
+            # Register for collision-aware RRT checks: during every is_collision_free
+            # call the held cylinder will be teleported to EE_pos + R_ee @ rel_pos so
+            # that the planner sees it as part of the arm.
+            self.env.set_collision_held_body(holding, rel_pos, rel_mat)
+
+            # Also set up the kinematic attachment so step() keeps the cylinder
+            # at the EE (prevents it from falling under gravity during viewer loops
+            # and feasibility checker settle steps).
+            self.env.attach_object_to_ee(holding)
     
     def generate_pddl_problem(self, problem_name: str, output_path: Optional[str] = None, goal_string: Optional[str] = "") -> str:
         """
