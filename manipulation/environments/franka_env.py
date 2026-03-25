@@ -59,7 +59,7 @@ class FrankaEnvironment(BaseEnvironment):
             self.collision_bodies = collision_bodies
         else:
             self.collision_bodies = [
-                "link0", "link1", "link2", "link3", "link4", "link5", "link6",
+                "link0", "link1", "link2", "link3", "link4", "link5", "link6", "link7",
                 "hand", "right_finger", "left_finger"
             ]
         
@@ -435,20 +435,41 @@ class FrankaEnvironment(BaseEnvironment):
             "rel_pos":   rel_pos,
             "rel_mat":   rel_mat,
         }
+        # Automatically register for collision-aware planning so that
+        # is_collision_free correctly moves the held body with the arm and
+        # treats it as robot geometry (gripper contacts ignored, environment
+        # contacts detected).
+        self.set_collision_held_body(body_name, rel_pos, rel_mat)
 
     def detach_object(self):
         """Remove the kinematic attachment set by attach_object_to_ee()."""
         self._attached = None
+        self.clear_collision_held_body()
 
     def set_collision_held_body(self, body_name: str,
                                 rel_pos: np.ndarray, rel_mat: np.ndarray):
         """Register a held body for collision-checking purposes.
 
-        Unlike ``attach_object_to_ee`` (which drives ``step()``), this only
-        affects ``is_collision_free`` / ``is_path_collision_free``: before each
-        ``mj_forward`` in those methods the body is teleported to
-        ``ee_pos + R_ee @ rel_pos`` so that RRT* sees the held object as part
-        of the arm geometry.
+        Called automatically by ``attach_object_to_ee``; override only when
+        you need a different relative offset.
+
+        During every ``is_collision_free`` call the body is teleported to
+        ``ee_pos + R_ee @ rel_pos`` so that RRT* sees the carried object at
+        the correct position for each candidate arm configuration and can
+        detect arm-link vs environment contacts accurately.
+
+        Two things happen:
+        1. During every ``is_collision_free`` call the body is teleported to
+           ``ee_pos + R_ee @ rel_pos`` so RRT* sees the carried object at the
+           correct position for each candidate arm configuration.
+        2. The body is added to ``_collision_body_ids`` (treated as robot
+           geometry).  This means:
+           - held-body vs gripper contacts → "self-collision" → skipped ✓
+           - held-body vs table objects / other cylinders → flagged ✓
+
+        Note: at the put approach config the cylinder bottom is 2 mm above the
+        table surface (by construction of ``cyl_z``), so no false table contact
+        is generated there.
 
         Args:
             body_name: Free body whose freejoint will be repositioned.
@@ -459,15 +480,23 @@ class FrankaEnvironment(BaseEnvironment):
         joint_id   = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         if joint_id < 0:
             raise ValueError(f"Free joint '{joint_name}' not found")
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         self._collision_held_body = {
+            "body_id": body_id,
             "qadr":    self.model.jnt_qposadr[joint_id],
             "rel_pos": rel_pos.copy(),
             "rel_mat": rel_mat.copy(),
         }
+        if body_id >= 0:
+            self._collision_body_ids.add(body_id)
 
     def clear_collision_held_body(self):
         """Remove the held-body collision registration."""
-        self._collision_held_body = None
+        if self._collision_held_body is not None:
+            body_id = self._collision_held_body.get("body_id", -1)
+            if body_id >= 0:
+                self._collision_body_ids.discard(body_id)
+            self._collision_held_body = None
 
     def _apply_collision_held_body(self):
         """Teleport the held body to the current EE pose (call after mj_forward)."""

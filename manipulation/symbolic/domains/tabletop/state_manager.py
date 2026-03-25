@@ -117,6 +117,27 @@ class StateManager(BaseStateManager):
         
         return state
     
+    def get_transport_pose(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return the canonical FRONT-grasp transport pose (pos, quat).
+
+        This is the EE target used when the arm holds a cylinder above the
+        table: grid centre in XY, 35 cm above the table surface, FRONT
+        orientation (EE body-Z along world +Y, fingers along X).
+
+        Used by both set_from_grounded_state (feasibility checker initialisation)
+        and execution code (_go_to_transport in demos) so both always start from
+        the same configuration.
+        """
+        front_quat = np.array([-0.5, 0.5, 0.5, 0.5])
+        cell_xs = [info['center'][0] for info in self.grid.cells.values()]
+        cell_ys = [info['center'][1] for info in self.grid.cells.values()]
+        transport_pos = np.array([
+            float(np.mean(cell_xs)),
+            float(np.mean(cell_ys)) - 0.05,   # slightly toward robot
+            self.grid.table_height + 0.35,     # 35 cm above table
+        ])
+        return transport_pos, front_quat
+
     def set_from_grounded_state(self, state: Dict[str, any]):
         """
         Set MuJoCo state from grounded symbolic representation.
@@ -133,7 +154,7 @@ class StateManager(BaseStateManager):
         """
         from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
 
-        # Clear any previous kinematic attachment before loading new state
+        # Clear any previous kinematic attachment (also clears collision_held_body)
         self.env.detach_object()
 
         # Hide all cylinders first
@@ -150,7 +171,7 @@ class StateManager(BaseStateManager):
             centroid_z = self.grid.table_height + height + 0.002
             self._set_cylinder_position(cyl_idx, centroid_x, centroid_y, centroid_z)
 
-        # Reset arm to home
+        # Reset arm to home (open gripper)
         self.env.data.qpos[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
         self.env.data.ctrl[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
         self.env.reset_velocities()
@@ -159,23 +180,11 @@ class StateManager(BaseStateManager):
         holding = state.get('holding', None)
         self.gripper_holding = holding
 
-        # Clear any previous held-body registration
-        self.env.clear_collision_held_body()
-
         if holding is not None:
             cyl_idx = int(holding.split('_')[1])
 
-            # Move the arm into a canonical FRONT-grasp transport configuration via IK
-            # so the held cylinder appears naturally gripped between the fingers.
-            # FRONT quat: EE body-Z along world +Y (approach from -Y), fingers along X.
-            front_quat = np.array([-0.5, 0.5, 0.5, 0.5])
-            cell_xs = [info['center'][0] for info in self.grid.cells.values()]
-            cell_ys = [info['center'][1] for info in self.grid.cells.values()]
-            transport_pos = np.array([
-                float(np.mean(cell_xs)),
-                float(np.mean(cell_ys)) - 0.05,   # slightly toward robot
-                self.grid.table_height + 0.35,     # 35 cm above table
-            ])
+            # Move arm to canonical transport pose via IK
+            transport_pos, front_quat = self.get_transport_pose()
             dt = self.env.model.opt.timestep
             self.env.ik.update_configuration(self.env.data.qpos)
             self.env.ik.set_target_position(transport_pos, front_quat)
@@ -189,25 +198,18 @@ class StateManager(BaseStateManager):
             ee_pos = self.env.data.site_xpos[self.env._ee_site_id].copy()
             ee_mat = self.env.data.site_xmat[self.env._ee_site_id].reshape(3, 3).copy()
 
-            # rel_pos: cylinder centre sits GRASP_CONTACT_OFFSET along EE +Z (EE frame)
+            # Place the cylinder at the EE contact point
             rel_pos = np.array([0.0, 0.0, GRASP_CONTACT_OFFSET])
-            # rel_mat: cylinder is upright in world (identity), so in EE frame → R_ee.T
-            rel_mat = ee_mat.T
-
-            # Place the cylinder physically at the EE
             cyl_world_pos = ee_pos + ee_mat @ rel_pos
             self._set_cylinder_position(
                 cyl_idx, cyl_world_pos[0], cyl_world_pos[1], cyl_world_pos[2]
             )
 
-            # Register for collision-aware RRT checks: during every is_collision_free
-            # call the held cylinder will be teleported to EE_pos + R_ee @ rel_pos so
-            # that the planner sees it as part of the arm.
-            self.env.set_collision_held_body(holding, rel_pos, rel_mat)
-
-            # Also set up the kinematic attachment so step() keeps the cylinder
-            # at the EE (prevents it from falling under gravity during viewer loops
-            # and feasibility checker settle steps).
+            # attach_object_to_ee automatically calls set_collision_held_body,
+            # which (a) teleports the cylinder with the EE during every
+            # is_collision_free call and (b) adds it to _collision_body_ids so
+            # that cylinder-gripper contacts are treated as self-collisions
+            # (ignored) while cylinder-table/object contacts are still detected.
             self.env.attach_object_to_ee(holding)
     
     def generate_pddl_problem(self, problem_name: str, output_path: Optional[str] = None, goal_string: Optional[str] = "") -> str:
@@ -433,10 +435,17 @@ class StateManager(BaseStateManager):
         print(f"Placed {len(cylinder_positions)} cylinders successfully")
     
     def _hide_cylinder(self, cyl_idx: int):
-        """Move cylinder far off to the side to hide it."""
+        """Move cylinder far above the scene so it has no floor contacts.
+
+        Placing at z=half_height puts the base exactly on the floor plane,
+        generating ~10 contact constraints per cylinder.  With 30 cylinders
+        this inflates mj_forward cost by ~55x.  Floating at z=50 keeps the
+        scene contact-free during the feasibility checker's planning phase
+        (cylinders won't fall far enough to ground in the ~2s of simulation
+        that a single check runs).
+        """
         body_name = f"cylinder_{cyl_idx}"
-        _, height = self.CYLINDER_SPECS[cyl_idx]
-        self.env.set_object_pose(body_name, np.array([100.0, 0.0, height]))
+        self.env.set_object_pose(body_name, np.array([100.0, 0.0, 50.0]))
     
     def _set_cylinder_position(self, cyl_idx: int, x: float, y: float, z: float):
         """Set cylinder position."""
