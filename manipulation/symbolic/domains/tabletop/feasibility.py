@@ -60,9 +60,14 @@ class ActionFeasibilityChecker:
 
     def __init__(self, env, planner, state_manager, grasp_planner: GraspPlanner,
                  max_iterations: int = 1000, settle_steps: int = 60,
-                 ik_max_iters: int = 100, ik_pos_threshold: float = 0.005):
+                 ik_max_iters: int = 100, ik_pos_threshold: float = 0.005,
+                 feasibility_planner=None):
         self._env           = env
         self._planner       = planner
+        # Use a dedicated feasibility planner (e.g. FeasibilityRRT) for all
+        # plan / plan_to_pose calls inside the checker.  Falls back to the
+        # main planner if none is provided (backward-compatible default).
+        self._feas_planner  = feasibility_planner if feasibility_planner is not None else planner
         self._state_manager = state_manager
         self._grasp_planner = grasp_planner
         self.max_iterations = max_iterations
@@ -187,7 +192,7 @@ class ActionFeasibilityChecker:
 
         # 4. RRT* — approach path
         t0 = time.perf_counter()
-        path = self._planner.plan_to_pose(
+        path = self._feas_planner.plan_to_pose(
             candidate.approach_pos, candidate.grasp_quat,
             dt=dt, max_iterations=self.max_iterations,
         )
@@ -198,7 +203,7 @@ class ActionFeasibilityChecker:
             return False, {**timing, "reason": "rrt_approach_fail"}
 
         # Execute approach so grasp planning starts from the correct config
-        self._env.execute_path(path, self._planner)
+        self._env.execute_path(path, self._feas_planner)
         self._wait_idle()
 
         # 5. IK — grasp-contact pose (cylinder is exception: gripper may touch it)
@@ -215,7 +220,7 @@ class ActionFeasibilityChecker:
 
         # 6. RRT* — grasp-contact path
         t0 = time.perf_counter()
-        path = self._planner.plan_to_pose(
+        path = self._feas_planner.plan_to_pose(
             candidate.grasp_pos, candidate.grasp_quat,
             dt=dt, max_iterations=self.max_iterations,
         )
@@ -229,7 +234,7 @@ class ActionFeasibilityChecker:
         # Execute grasp so transport check starts from the real post-grasp config.
         # Keep the cylinder exception active: fingers touch the cylinder at the
         # grasp position, so is_collision_free(start) would fail without it.
-        self._env.execute_path(path, self._planner)
+        self._env.execute_path(path, self._feas_planner)
         self._wait_idle()
         # (exception still active)
 
@@ -261,12 +266,12 @@ class ActionFeasibilityChecker:
         self._env._collision_body_ids = saved_ids - {link7_id}
         self._env._collision_held_body = None
         t0 = time.perf_counter()
-        path = self._planner.plan(
+        path = self._feas_planner.plan(
             self._env.data.qpos[:7], transport_q,
             max_iterations=self.max_iterations,
         )
         if path is None:
-            path = self._planner.plan(
+            path = self._feas_planner.plan(
                 self._env.data.qpos[:7], transport_q,
                 max_iterations=self.max_iterations,
             )
@@ -434,7 +439,7 @@ class ActionFeasibilityChecker:
 
         # 5. RRT* — path to pre-place standoff
         t0 = time.perf_counter()
-        path = self._planner.plan_to_pose(
+        path = self._feas_planner.plan_to_pose(
             approach_pos, put_quat,
             dt=dt, max_iterations=self.max_iterations,
         )
@@ -446,7 +451,7 @@ class ActionFeasibilityChecker:
             return False, {**timing, "reason": "rrt_approach_fail"}
 
         # Execute standoff path so place-descent check starts from correct config.
-        self._env.execute_path(path, self._planner)
+        self._env.execute_path(path, self._feas_planner)
         self._wait_idle()
 
         # 6. IK — place-contact pose (descend to cylinder resting height)
@@ -462,7 +467,7 @@ class ActionFeasibilityChecker:
 
         # 7. RRT* — descent to place-contact
         t0 = time.perf_counter()
-        path = self._planner.plan_to_pose(
+        path = self._feas_planner.plan_to_pose(
             place_ee_pos, put_quat,
             dt=dt, max_iterations=self.max_iterations,
         )
