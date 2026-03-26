@@ -92,7 +92,7 @@ class _Completer:
 
         return candidates[idx] if idx < len(candidates) else None
 
-from manipulation import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC, ControllerStatus
+from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC, ControllerStatus
 from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
 from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
 from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
@@ -108,6 +108,11 @@ _GRID_OFFSET_Y = 0.25
 # ── Motion-planner settings ────────────────────────────────────────────────
 _RRT_ITERS      = 2000
 _RRT_ITERS_FINE = 1000
+# FeasibilityRRT is ~4x faster per call than RRTStar, so we can afford a
+# proportionally larger budget while staying within the same wall-clock time.
+# 4000 iters here ≈ old RRTStar at 1000 iters in cost, but 2x the coverage
+# of the execution planner — fewer false negatives on tight configurations.
+_FEAS_ITERS     = 4000
 _CTRL_DELTA     = 0.05
 _VEL_THRESHOLD  = 0.02
 _COL_STEPS      = 20
@@ -438,10 +443,14 @@ def main():
     check_planner.step_size             = 0.2
     check_planner.goal_sample_rate      = 0.2
     check_planner.collision_check_steps = _COL_STEPS
+    check_feas_planner = FeasibilityRRT(check_env)
+    check_feas_planner.step_size             = 0.2
+    check_feas_planner.collision_check_steps = _COL_STEPS
     check_gp      = GraspPlanner(table_z=check_grid.table_height)
     checker = ActionFeasibilityChecker(
         check_env, check_planner, check_sm, check_gp,
-        max_iterations=1000,
+        max_iterations=_FEAS_ITERS,
+        feasibility_planner=check_feas_planner,
     )
 
     print(f"\nLoaded: {Path(args.problem).name}")
