@@ -61,17 +61,22 @@ class ActionFeasibilityChecker:
     def __init__(self, env, planner, state_manager, grasp_planner: GraspPlanner,
                  max_iterations: int = 1000, settle_steps: int = 60,
                  ik_max_iters: int = 100, ik_pos_threshold: float = 0.005,
-                 feasibility_planner=None):
+                 feasibility_planner=None,
+                 strict_transport: bool = False):
         self._env           = env
         self._planner       = planner
         # Use a dedicated feasibility planner (e.g. FeasibilityRRT) for all
         # plan / plan_to_pose calls inside the checker.  Falls back to the
         # main planner if none is provided (backward-compatible default).
-        self._feas_planner  = feasibility_planner if feasibility_planner is not None else planner
-        self._state_manager = state_manager
-        self._grasp_planner = grasp_planner
-        self.max_iterations = max_iterations
-        self._settle_steps  = settle_steps
+        self._feas_planner    = feasibility_planner if feasibility_planner is not None else planner
+        self._state_manager   = state_manager
+        self._grasp_planner   = grasp_planner
+        self.max_iterations   = max_iterations
+        self._settle_steps    = settle_steps
+        # When True, transport planning must succeed in a single attempt (no retry).
+        # Stricter than the default (which retries once) — reduces false positives
+        # at the cost of slightly more false negatives for borderline transport paths.
+        self._strict_transport = strict_transport
 
         # Tuned for feasibility checking (benchmarked: fastest zero-false-negative combo)
         env.ik.max_iters      = ik_max_iters
@@ -270,7 +275,10 @@ class ActionFeasibilityChecker:
             self._env.data.qpos[:7], transport_q,
             max_iterations=self.max_iterations,
         )
-        if path is None:
+        # Retry once unless strict_transport is enabled.  Transport has high
+        # variance; a second attempt catches paths the first attempt missed.
+        # strict_transport=True skips this to reduce false positives.
+        if path is None and not self._strict_transport:
             path = self._feas_planner.plan(
                 self._env.data.qpos[:7], transport_q,
                 max_iterations=self.max_iterations,

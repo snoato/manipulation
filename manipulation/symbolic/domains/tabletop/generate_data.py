@@ -186,6 +186,7 @@ def _build_env(args) -> tuple:
         ik_max_iters=args.ik_iters,
         ik_pos_threshold=args.ik_pos_thresh,
         feasibility_planner=feas_planner,
+        strict_transport=True,
     )
 
     # Pre-compute kinematic reachability once per process (IK only, fast).
