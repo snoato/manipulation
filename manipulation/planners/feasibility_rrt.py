@@ -309,7 +309,11 @@ class FeasibilityRRT:
                 goal_config = self.env.ik.configuration.q[:7].copy()
                 self.env.data.qpos[:7] = start_config
                 mujoco.mj_forward(self.env.model, self.env.data)
-                return self.plan(start_config, goal_config, max_iterations)
+                # Continue to next IK seed if planning fails — different seeds
+                # produce different joint-space goals with different reachability.
+                path = self.plan(start_config, goal_config, max_iterations)
+                if path is not None:
+                    return path
 
         self.env.data.qpos[:7] = start_config
         mujoco.mj_forward(self.env.model, self.env.data)

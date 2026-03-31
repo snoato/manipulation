@@ -280,18 +280,22 @@ class RRTStar(BaseMotionPlanner):
             
             if self.ik.converge_ik(dt):
                 goal_config = self.ik.configuration.q[:7].copy()
-                
+
                 # Restore original configuration before planning
                 self.data.qpos[:7] = start_config
                 mujoco.mj_forward(self.model, self.data)
-                
-                # Plan from original start to IK solution
-                return self.plan(start_config, goal_config, max_iterations)
-        
+
+                # Plan from original start to IK solution; continue to next
+                # IK seed if planning fails (different seeds reach different
+                # joint-space configurations with very different reachability).
+                path = self.plan(start_config, goal_config, max_iterations)
+                if path is not None:
+                    return path
+
         # Restore original configuration
         self.data.qpos[:7] = start_config
         mujoco.mj_forward(self.model, self.data)
-        
+
         return None
     
     def get_path_cost(self, path: List[np.ndarray]) -> float:
