@@ -26,6 +26,7 @@ import multiprocessing as mp
 import shutil
 import time
 from collections import Counter, deque
+import heapq
 from pathlib import Path
 
 import mujoco
@@ -37,7 +38,7 @@ except ImportError:
     wandb = None
 
 from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType
+from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
 from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
 from manipulation.symbolic.domains.tabletop.state_manager import StateManager
@@ -70,18 +71,10 @@ _DEFAULT_IK_POS_THRESH        = 0.005  # benchmarked: fastest zero-false-negativ
 _DEFAULT_NUM_WORKERS          = 1
 
 # No-drop planning constants
-_SHADOW_MAX_DEPTH  = 3   # rows behind a cylinder included in its shadow cone
-_BFS_CAND_LIMIT    = 8   # max put-destinations per obstacle explored in BFS
-_GREEDY_CAND_LIMIT = 15  # max put-destinations per obstacle evaluated in greedy
-_GREEDY_MAX_MOVES  = 6   # max pick+put pairs in greedy phase
-_BFS_MAX_DEPTH     = 4   # max pick+put pairs explored in BFS phase
+_BFS_MAX_DEPTH         = 6   # max obstacle pick+put pairs before giving up
+_BFS_MAX_PUT_CANDS     = 4   # top-K put destinations tried per obstacle per BFS node
 
 # Feasibility checker tuning for data generation
-# Put feasibility is checked with an IK proxy (dest_cell in reachable_cells) rather
-# than full RRT — the shadow + reachability filter in _sorted_candidates is the
-# main quality gate.  Pick checks use full RRT but with a reduced budget vs the
-# interactive checker (correctness is still high; FeasibilityRRT at 300 iters >>
-# RRTStar at 1000 in terms of wall-clock).
 _CHECKER_PICK_ITERS    = 300  # FeasibilityRRT iterations for pick checks
 _CHECKER_SETTLE_STEPS  = 10   # sim settle steps before each pick check
 
@@ -122,6 +115,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-run-name",      type=str,   default=None)
     p.add_argument("--domain-src",          type=str,   default="",
                    help="Override path to domain.pddl")
+    p.add_argument("--min-plan-len",        type=int,   default=1,
+                   help="hard minimum plan length; scenes with shorter plans are rejected")
+    p.add_argument("--plan-len-mean",       type=float, default=None,
+                   help="target plan length for Gaussian shaping (None = disabled)")
+    p.add_argument("--plan-len-std",        type=float, default=2.0,
+                   help="std-dev of Gaussian plan-length distribution (used with --plan-len-mean)")
     p.add_argument("--allow-drop",          action="store_true",
                    help="Allow the robot to drop cylinders on the floor (default: no-drop mode)")
     return p.parse_args()
@@ -421,84 +420,61 @@ def _arrangement_to_state_dict(arrangement: frozenset) -> dict:
     }
 
 
-def _shadow_cells(arrangement: frozenset, grid) -> set[str]:
-    """Return cell IDs in the directional shadow cone of any cylinder.
-
-    A cell (cx+dx, cy+depth) is in the shadow of (cx, cy) when:
-      depth ∈ [1, _SHADOW_MAX_DEPTH]  and  |dx| ≤ depth - 1
-
-    This represents a widening cone behind each cylinder from the robot's
-    approach direction (y=0 is closest to robot; higher y = further away).
-    Shadow cells are deprioritised as put-destinations — placing an obstacle
-    behind another one creates stacked occlusion.
-    """
-    shadow: set[str] = set()
-    cells_x = grid.cells_x
-    cells_y = grid.cells_y
-
-    for _, cell_id in arrangement:
-        parts = cell_id.split("_")
-        cx, cy = int(parts[1]), int(parts[2])
-        for depth in range(1, _SHADOW_MAX_DEPTH + 1):
-            for dx in range(-(depth - 1), depth):
-                nx, ny = cx + dx, cy + depth
-                if 0 <= nx < cells_x and 0 <= ny < cells_y:
-                    shadow.add(f"cell_{nx}_{ny}")
-
-    return shadow
-
-
-def _sorted_candidates(
-    arrangement: frozenset,
-    reachable_cells: frozenset,
-    grid,
-    exclude_cell: str | None = None,
-    target_cell: str | None = None,
+def _put_cell_order(
+    checker: ActionFeasibilityChecker,
+    target_cell: str,
 ) -> list[str]:
-    """Return empty reachable cells sorted by desirability as put-destinations.
+    """All grid cells sorted by Euclidean distance from *target_cell* (farthest first).
 
-    Order: [non-shadow, non-adjacent-to-target] first, then shadow/adjacent.
+    Prefers cells far from the target to minimise future occlusion of the
+    approach corridor.  Uses world-space coordinates rather than a grid-index
+    proxy so diagonal distances are represented correctly.
 
-    Args:
-        arrangement:    Current cylinder positions.
-        reachable_cells: Pre-computed IK-reachable cell IDs.
-        grid:           GridDomain instance (for cells_x, cells_y).
-        exclude_cell:   Cell to exclude from candidates (the cylinder's current
-                        cell — it will be vacated, but other cylinders might
-                        fill it, so we exclude it to avoid trivial swaps).
-        target_cell:    If provided, cells adjacent to the target are moved to
-                        the end of the list (placing an obstacle next to the
-                        target makes the final pick harder).
+    Proximity-margin and IK feasibility filtering happen in the BFS expansion
+    loop via _check_put_no_drop and _check_put_ik respectively.
     """
-    occupied = {cell for _, cell in arrangement}
-    if exclude_cell is not None:
-        occupied = occupied - {exclude_cell}
+    grid = checker._state_manager.grid
+    tx, ty = grid.cells[target_cell]["center"]
 
-    shadow = _shadow_cells(arrangement, grid)
-
-    # Cells adjacent to target (cardinal directions)
-    near_target: set[str] = set()
-    if target_cell is not None:
-        parts = target_cell.split("_")
-        tx, ty = int(parts[1]), int(parts[2])
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nx, ny = tx + dx, ty + dy
-            if 0 <= nx < grid.cells_x and 0 <= ny < grid.cells_y:
-                near_target.add(f"cell_{nx}_{ny}")
-
-    available = [c for c in reachable_cells if c not in occupied and c != exclude_cell]
-
-    preferred  = [c for c in available if c not in shadow and c not in near_target]
-    deprioritised = [c for c in available if c not in preferred]
-
-    return preferred + deprioritised
+    scored = [
+        (np.sqrt((cx - tx) ** 2 + (cy - ty) ** 2), cell_id)
+        for cell_id, info in grid.cells.items()
+        for cx, cy in (info["center"],)
+    ]
+    scored.sort(key=lambda x: -x[0])
+    return [cell_id for _, cell_id in scored]
 
 
 # ---------------------------------------------------------------------------
 # No-drop mode — cached feasibility checks
 # ---------------------------------------------------------------------------
 
-_FAST_PICK_ITERS = 100  # FeasibilityRRT iterations for the fast pick check
+_FAST_PICK_ITERS       = 100  # FeasibilityRRT iterations for the fast pick check
+_FAST_PUT_ITERS        = 150  # FeasibilityRRT iterations for the put-from-transport check
+_PRECOMPUTE_RRT_ITERS  = 100  # RRT iterations per segment during precompute path validation
+_MAX_PICK_NEIGHBORS    = 3    # max cylinders within Manhattan-2 before pick is skipped
+
+
+def _pick_neighbor_count(arrangement: frozenset, cyl: str, max_dist: int = 2) -> int:
+    """Count cylinders within Manhattan distance *max_dist* of *cyl*.
+
+    Pure grid geometry, ~0ms.  Cylinders with high neighbor counts are
+    surrounded and almost certainly unpickable; skip them without any
+    MuJoCo work.
+    """
+    arr_dict  = dict(arrangement)
+    cyl_cell  = arr_dict.get(cyl)
+    if cyl_cell is None:
+        return 0
+    cx, cy = int(cyl_cell.split("_")[1]), int(cyl_cell.split("_")[2])
+    count = 0
+    for other_cyl, other_cell in arrangement:
+        if other_cyl == cyl:
+            continue
+        ox, oy = int(other_cell.split("_")[1]), int(other_cell.split("_")[2])
+        if abs(ox - cx) + abs(oy - cy) <= max_dist:
+            count += 1
+    return count
 
 
 def _check_pick_no_drop(
@@ -515,6 +491,11 @@ def _check_pick_no_drop(
     the approach pose (~50-100ms) is sufficient.  Grasp and transport phases
     are skipped; they almost never fail when the approach succeeds.
     """
+    # Fast density pre-filter: too many close neighbours → surrounded → skip.
+    if _pick_neighbor_count(arrangement, cyl) >= _MAX_PICK_NEIGHBORS:
+        pick_cache[(arrangement, cyl)] = False
+        return False
+
     key = (arrangement, cyl)
     result = pick_cache.get(key)
     if result is not None:
@@ -607,20 +588,17 @@ def _check_pick_no_drop(
 
 
 def _check_put_no_drop(
-    reachable_cells: frozenset,
     arrangement: frozenset,
     cyl: str,
     dest_cell: str,
     put_cache: dict,
     placement_margin: int = 1,
 ) -> bool:
-    """Lightweight put feasibility: IK proxy + placement-margin check.
+    """Placement-margin check: no other cylinder within *placement_margin* cells
+    in any cardinal direction of *dest_cell*.
 
-    Full RRT put checks are too expensive for use in the greedy inner loop.
-    Instead we check:
-      1. dest_cell is IK-reachable.
-      2. No other cylinder is within placement_margin cells in any cardinal
-         direction of dest_cell (matches _sample_state validity rule).
+    IK feasibility is handled separately by _check_put_ik; this function is
+    purely geometric (no MuJoCo state, ~0 ms).
 
     The cache key uses others_arr (arrangement minus the moving cyl) because
     the moving cyl's current cell doesn't affect put feasibility.
@@ -629,196 +607,713 @@ def _check_put_no_drop(
     key = (others_arr, dest_cell, placement_margin)
     result = put_cache.get(key)
     if result is None:
-        if dest_cell not in reachable_cells:
-            result = False
-        else:
-            parts = dest_cell.split("_")
-            dx, dy = int(parts[1]), int(parts[2])
-            result = True
-            for _, other_cell in others_arr:
-                oparts = other_cell.split("_")
-                ox, oy = int(oparts[1]), int(oparts[2])
-                if ox == dx and abs(oy - dy) <= placement_margin:
-                    result = False
-                    break
-                if oy == dy and abs(ox - dx) <= placement_margin:
-                    result = False
-                    break
+        parts = dest_cell.split("_")
+        dx, dy = int(parts[1]), int(parts[2])
+        result = True
+        for _, other_cell in others_arr:
+            oparts = other_cell.split("_")
+            ox, oy = int(oparts[1]), int(oparts[2])
+            if max(abs(ox - dx), abs(oy - dy)) <= placement_margin:
+                result = False
+                break
         put_cache[key] = result
     return result
 
 
 # ---------------------------------------------------------------------------
-# No-drop mode — greedy solver (MRV ordering)
+# No-drop mode — fast IK+collision check and 1-on-1 blocker detection
 # ---------------------------------------------------------------------------
 
-def _greedy_no_drop(
+def _check_approach_ik(
     checker: ActionFeasibilityChecker,
     arrangement: frozenset,
-    target: str,
-    reachable_cells: frozenset,
-    grid,
-    pick_cache: dict,
-    put_cache: dict,
-    ordering: str = "mrv",
-    placement_margin: int = 1,
-) -> list[tuple] | None:
-    """Greedy no-drop solver with MRV (Minimum Remaining Values) ordering.
+    cyl: str,
+    ik_cache: dict,
+    front_only: bool = False,
+) -> bool:
+    """IK convergence + teleport + collision check only (no RRT).
 
-    At each step:
-    1. Check if target is directly pickable → done.
-    2. For each obstacle, count how many valid put-destinations it has
-       (checking up to _GREEDY_CAND_LIMIT candidates).
-    3. Sort obstacles by fewest valid destinations (MRV = most constrained first).
-    4. Move the most constrained obstacle to its first valid destination.
-    5. Repeat up to _GREEDY_MAX_MOVES times.
+    Returns True if a grasp candidate's approach pose is collision-free.
 
-    Returns a plan (list of action tuples) or None.
-
-    Args:
-        ordering: ``"mrv"`` — move most-constrained obstacle first (fewest
-            valid destinations); ``"lrv"`` — move least-constrained first;
-            ``"random"`` — shuffle obstacle order before ranking.
+    front_only=False (default): any approach direction counts — used for
+      obstacle movability pre-filtering (can we move this obstacle at all?).
+    front_only=True: only the FRONT approach candidate is tested — used for
+      blocker detection and the terminal pick check, so that a cylinder that
+      blocks the preferred FRONT approach is correctly flagged even if some
+      other approach direction would be clear.
     """
-    current = arrangement
-    plan: list[tuple] = []
+    key = (arrangement, cyl, front_only)
+    result = ik_cache.get(key)
+    if result is not None:
+        return result
 
-    for _ in range(_GREEDY_MAX_MOVES):
-        if _check_pick_no_drop(checker, current, target, pick_cache):
-            target_cell = dict(current)[target]
-            return plan + [("pick", target, target_cell)]
+    env           = checker._env
+    grasp_planner = checker._grasp_planner
+    state_manager = checker._state_manager
 
-        obstacles = [(cyl, cell) for cyl, cell in current if cyl != target]
-        if not obstacles:
-            return None
+    saved_qpos       = env.data.qpos.copy()
+    saved_qvel       = env.data.qvel.copy()
+    saved_exceptions = list(env.collision_exceptions)
+    try:
+        state = _arrangement_to_state_dict(arrangement)
+        state_manager.set_from_grounded_state(state)
+        env.controller.stop()
+        env.data.qpos[:8] = env.initial_qpos[:8]
+        env.data.ctrl[:8] = env.initial_ctrl[:8]
+        mujoco.mj_forward(env.model, env.data)
+        env.ik.update_configuration(env.data.qpos)
 
-        if ordering == "random":
-            obstacles = list(obstacles)
-            np.random.shuffle(obstacles)
+        dt        = env.model.opt.timestep
+        cyl_pos   = env.get_object_position(cyl)
+        half_size = env.get_object_half_size(cyl)
+        cyl_quat  = env.get_object_orientation(cyl)
+        candidates = grasp_planner.generate_candidates(cyl_pos, half_size, cyl_quat)
+        ordered = sorted(candidates, key=lambda c: 0 if c.grasp_type == GraspType.FRONT else 1)
+        if front_only:
+            ordered = [c for c in ordered if c.grasp_type == GraspType.FRONT]
 
-        # Identify true blockers: obstacles whose removal makes the target pickable.
-        # Only move these — moving a non-blocker never helps.
-        blockers = [
-            (cyl, cell) for cyl, cell in obstacles
-            if _check_pick_no_drop(
-                checker,
-                frozenset((c, cl) for c, cl in current if c != cyl),
-                target,
-                pick_cache,
-            )
-        ]
-        # Fall back to all obstacles only when no single-removal unblocks the target
-        # (target needs 2+ cylinders removed simultaneously).
-        candidates = blockers if blockers else obstacles
+        ok = False
+        home_q = env.data.qpos[:7].copy()
+        for candidate in ordered:
+            env.set_collision_exceptions(saved_exceptions)
+            env.data.qpos[:7] = home_q
+            mujoco.mj_forward(env.model, env.data)
+            env.ik.update_configuration(env.data.qpos)
 
-        # Score each candidate by number of valid put-destinations (instant check).
-        ranked: list[tuple[int, str, str, list[str]]] = []
-        for cyl, cell in candidates:
-            others = frozenset((c, cl) for c, cl in current if c != cyl)
-            cands = _sorted_candidates(others, reachable_cells, grid,
-                                       exclude_cell=cell,
-                                       target_cell=dict(current).get(target))
-            valid: list[str] = []
-            for dest in cands[:_GREEDY_CAND_LIMIT]:
-                if _check_put_no_drop(reachable_cells, current, cyl, dest, put_cache, placement_margin):
-                    valid.append(dest)
-                    if len(valid) >= 3:  # enough to compare; cap for speed
-                        break
-            ranked.append((len(valid), cyl, cell, valid))
-
-        if ordering == "lrv":
-            ranked.sort(key=lambda x: x[0], reverse=True)
-        elif ordering != "random":  # mrv (default)
-            ranked.sort(key=lambda x: x[0])
-        # random: already shuffled above; stable sort preserves order
-
-        moved = False
-        for _, cyl, cell, valid_dests in ranked:
-            if not valid_dests:
+            # --- Approach pose (standoff) ---
+            env.ik.set_target_position(candidate.approach_pos, candidate.grasp_quat)
+            if not env.ik.converge_ik(dt):
                 continue
-            # Verify the obstacle itself is actually pickable in the current
-            # arrangement before committing to move it.
-            if not _check_pick_no_drop(checker, current, cyl, pick_cache):
+            approach_q = env.ik.configuration.q[:7].copy()
+            if not env.is_collision_free(approach_q):
                 continue
-            dest = valid_dests[0]
-            plan.append(("pick", cyl, cell))
-            plan.append(("put", cyl, dest))
-            current = (current - {(cyl, cell)}) | {(cyl, dest)}
-            moved = True
-            break
 
-        if not moved:
-            return None
+            # --- Grasp pose (arm fully extended to contact position) ---
+            # The approach pose may be clear while the grasp pose (further along
+            # the approach axis) hits adjacent cylinders.  Exclude the target
+            # cylinder itself since the arm is intentionally in contact with it.
+            env.add_collision_exception(cyl)
+            env.data.qpos[:7] = approach_q
+            mujoco.mj_forward(env.model, env.data)
+            env.ik.update_configuration(env.data.qpos)
+            env.ik.set_target_position(candidate.grasp_pos, candidate.grasp_quat)
+            if not env.ik.converge_ik(dt):
+                continue
+            grasp_q = env.ik.configuration.q[:7].copy()
+            if env.is_collision_free(grasp_q):
+                ok = True
+                break
+    except Exception:
+        ok = False
+    finally:
+        env.data.qpos[:] = saved_qpos
+        env.data.qvel[:] = saved_qvel
+        mujoco.mj_forward(env.model, env.data)
+        env.set_collision_exceptions(saved_exceptions)
 
-    # Final check after exhausting greedy moves
-    if _check_pick_no_drop(checker, current, target, pick_cache):
-        target_cell = dict(current)[target]
-        return plan + [("pick", target, target_cell)]
-
-    return None
+    ik_cache[key] = ok
+    return ok
 
 
-# ---------------------------------------------------------------------------
-# No-drop mode — BFS fallback
-# ---------------------------------------------------------------------------
-
-def _bfs_no_drop(
+def _direct_blockers_1on1(
     checker: ActionFeasibilityChecker,
-    initial_arrangement: frozenset,
-    target: str,
-    reachable_cells: frozenset,
-    grid,
-    pick_cache: dict,
-    put_cache: dict,
-    placement_margin: int = 1,
-) -> list[tuple] | None:
-    """BFS over (pick, put) pairs to find the shortest no-drop plan.
+    arrangement: frozenset,
+    target_cyl: str,
+    ik_cache: dict,
+) -> list[tuple[str, str]]:
+    """Find cylinders that block *target_cyl* in 1-on-1 isolation.
 
-    State: (arrangement, plan_so_far).
-    Branching is bounded to _BFS_CAND_LIMIT destinations per obstacle per state,
-    and depth is capped at _BFS_MAX_DEPTH pick+put pairs.
+    For each candidate obstacle with cy ≤ target_cy, set up a 2-cylinder
+    scene (only target + that obstacle) and check whether the target's
+    approach pose is in collision.  Obstacles that block even in isolation
+    are true geometric blockers.
+
+    Returns list of (cyl, cell) sorted by cy ascending (closest to robot
+    first — most directly in the approach path).
     """
-    queue: deque[tuple[frozenset, list[tuple]]] = deque([(initial_arrangement, [])])
-    visited: set[frozenset] = {initial_arrangement}
+    arrangement_dict = dict(arrangement)
+    target_cell = arrangement_dict.get(target_cyl)
+    if target_cell is None:
+        return []
 
-    while queue:
-        arrangement, plan = queue.popleft()
+    tparts = target_cell.split("_")
+    ty = int(tparts[2])
 
-        if len(plan) // 2 >= _BFS_MAX_DEPTH:
+    blockers: list[tuple[int, str, str]] = []  # (cy, cyl, cell)
+    for cyl, cell in arrangement:
+        if cyl == target_cyl:
+            continue
+        cparts = cell.split("_")
+        cy = int(cparts[2])
+        if cy > ty:  # behind target — can't block the approach from the robot side
             continue
 
-        if _check_pick_no_drop(checker, arrangement, target, pick_cache):
-            target_cell = dict(arrangement)[target]
-            return plan + [("pick", target, target_cell)]
+        # Isolated scene: only target + this one obstacle
+        isolated = frozenset([(target_cyl, target_cell), (cyl, cell)])
+        if not _check_approach_ik(checker, isolated, target_cyl, ik_cache, front_only=True):
+            blockers.append((cy, cyl, cell))
 
-        for cyl, cell in arrangement:
-            if cyl == target:
-                continue
-
-            others = frozenset((c, cl) for c, cl in arrangement if c != cyl)
-            cands = _sorted_candidates(others, reachable_cells, grid,
-                                       exclude_cell=cell,
-                                       target_cell=dict(arrangement).get(target))
-
-            checked = 0
-            for dest in cands:
-                if checked >= _BFS_CAND_LIMIT:
-                    break
-                if not _check_put_no_drop(reachable_cells, arrangement, cyl, dest, put_cache, placement_margin):
-                    continue
-                checked += 1
-
-                new_arr = (arrangement - {(cyl, cell)}) | {(cyl, dest)}
-                if new_arr in visited:
-                    continue
-                visited.add(new_arr)
-                queue.append((new_arr, plan + [("pick", cyl, cell), ("put", cyl, dest)]))
-
-    return None
+    blockers.sort(key=lambda x: x[0])  # closest to robot first
+    return [(cyl, cell) for _, cyl, cell in blockers]
 
 
 # ---------------------------------------------------------------------------
-# No-drop mode — entry point for one target
+# No-drop mode — put IK+collision check (fast, no RRT)
+# ---------------------------------------------------------------------------
+
+def _check_put_ik(
+    checker: ActionFeasibilityChecker,
+    arrangement: frozenset,
+    cyl: str,
+    dest_cell: str,
+    put_ik_cache: dict,
+) -> bool:
+    """IK convergence + collision check for the put approach and place poses.
+
+    Analogous to _check_approach_ik for picks: deterministic, ~5-10 ms,
+    no RRT.  Checks:
+      1. Transport IK from HOME converges.
+      2. IK for approach above dest_cell converges; approach_q is collision-free
+         with the held cylinder teleported to its EE-relative position.
+      3. IK for place-contact at dest_cell converges; place_q is collision-free.
+
+    *arrangement* must already have *cyl* removed (table state while held).
+    Cached by (arrangement, cyl, dest_cell).
+    """
+    key = (arrangement, cyl, dest_cell)
+    result = put_ik_cache.get(key)
+    if result is not None:
+        return result
+
+    env           = checker._env
+    grasp_planner = checker._grasp_planner
+    state_manager = checker._state_manager
+    grid          = state_manager.grid
+
+    saved_qpos       = env.data.qpos.copy()
+    saved_qvel       = env.data.qvel.copy()
+    saved_exceptions = list(env.collision_exceptions)
+    ok = False
+    try:
+        # 1. Place table cylinders at their cells (no held cylinder yet).
+        state = _arrangement_to_state_dict(arrangement)
+        state_manager.set_from_grounded_state(state)
+        env.controller.stop()
+        mujoco.mj_forward(env.model, env.data)
+
+        dt = env.model.opt.timestep
+
+        # 2. Transport IK from HOME.
+        env.ik.update_configuration(env.data.qpos)
+        transport_pos, transport_quat = state_manager.get_transport_pose()
+        env.ik.set_target_position(transport_pos, transport_quat)
+        if not env.ik.converge_ik(dt):
+            put_ik_cache[key] = False
+            return False
+        transport_q = env.ik.configuration.q[:7].copy()
+
+        # 3. Teleport arm to transport_q, place cylinder at grasp-contact position
+        #    (so rel_pos is correct ≈ [0,0,GRASP_CONTACT_OFFSET]), then attach.
+        from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
+        env.data.qpos[:7] = transport_q
+        mujoco.mj_forward(env.model, env.data)
+        ee_pos_t = env.data.site_xpos[env._ee_site_id].copy()
+        ee_mat_t = env.data.site_xmat[env._ee_site_id].reshape(3, 3).copy()
+        cyl_idx = int(cyl.split("_")[1])
+        cyl_world_pos = ee_pos_t + ee_mat_t @ np.array([0.0, 0.0, GRASP_CONTACT_OFFSET])
+        state_manager._set_cylinder_position(cyl_idx, cyl_world_pos[0], cyl_world_pos[1], cyl_world_pos[2])
+        mujoco.mj_forward(env.model, env.data)
+        env.attach_object_to_ee(cyl)
+
+        # 4. Compute put target geometry.
+        _radius, half_height = StateManager.CYLINDER_SPECS[cyl_idx]
+        half_size = np.array([_radius, _radius, half_height])
+
+        cx, cy_coord = grid.cells[dest_cell]["center"]
+        cyl_z = grid.table_height + half_height + 0.002
+        target_pos = np.array([cx, cy_coord, cyl_z])
+
+        candidates = grasp_planner.generate_candidates(target_pos, half_size)
+        front = next((c for c in candidates if c.grasp_type == GraspType.FRONT), None)
+        candidate = front if front is not None else (candidates[0] if candidates else None)
+        if candidate is None:
+            put_ik_cache[key] = False
+            return False
+
+        put_quat     = candidate.grasp_quat
+        R_put        = quat_to_rotmat(put_quat)
+        rel_pos_ee   = env._attached["rel_pos"]
+        place_ee_pos = target_pos - R_put @ rel_pos_ee
+        approach_pos = place_ee_pos + np.array([0.0, 0.0, grasp_planner.approach_dist])
+
+        # 5. Approach pose: IK from transport_q, then collision check.
+        env.data.qpos[:7] = transport_q
+        mujoco.mj_forward(env.model, env.data)
+        env.ik.update_configuration(env.data.qpos)
+        env.ik.set_target_position(approach_pos, put_quat)
+        if not env.ik.converge_ik(dt):
+            put_ik_cache[key] = False
+            return False
+        approach_q = env.ik.configuration.q[:7].copy()
+        if not env.is_collision_free(approach_q):
+            put_ik_cache[key] = False
+            return False
+
+        # 6. Place pose: IK from approach_q, then collision check.
+        env.data.qpos[:7] = approach_q
+        mujoco.mj_forward(env.model, env.data)
+        env.ik.update_configuration(env.data.qpos)
+        env.ik.set_target_position(place_ee_pos, put_quat)
+        if not env.ik.converge_ik(dt):
+            put_ik_cache[key] = False
+            return False
+        place_q = env.ik.configuration.q[:7].copy()
+        ok = env.is_collision_free(place_q)
+
+    except Exception:
+        ok = False
+    finally:
+        env.detach_object()
+        env.data.qpos[:] = saved_qpos
+        env.data.qvel[:] = saved_qvel
+        mujoco.mj_forward(env.model, env.data)
+        env.set_collision_exceptions(saved_exceptions)
+
+    put_ik_cache[key] = ok
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# No-drop mode — put feasibility from transport pose
+# ---------------------------------------------------------------------------
+
+def _check_put_from_transport(
+    checker: ActionFeasibilityChecker,
+    arrangement: frozenset,
+    cyl: str,
+    dest_cell: str,
+    put_rrt_cache: dict,
+    put_ik_cache: dict | None = None,
+) -> bool:
+    """Check if *cyl* can be placed at *dest_cell* starting from transport pose.
+
+    Mirrors the actual execution sequence:
+      transport_q  →  approach above dest_cell  →  place descent
+
+    Uses the feas_planner directly (no settle steps, no execute_path, no
+    wait_idle) for speed and uses the same IK seed / collision setup as the
+    execution code.
+
+    If *put_ik_cache* is provided, runs _check_put_ik as a fast pre-filter
+    before the RRT planning — avoids the stochastic RRT call when the endpoint
+    is already provably in collision.
+
+    *arrangement* must already have *cyl* removed (table state while held).
+    """
+    # Fast IK+collision pre-filter (same check, cheaper than RRT).
+    if put_ik_cache is not None:
+        if not _check_put_ik(checker, arrangement, cyl, dest_cell, put_ik_cache):
+            put_rrt_cache[(arrangement, cyl, dest_cell)] = False
+            return False
+    key = (arrangement, cyl, dest_cell)
+    result = put_rrt_cache.get(key)
+    if result is not None:
+        return result
+
+    env           = checker._env
+    feas_planner  = checker._feas_planner
+    grasp_planner = checker._grasp_planner
+    state_manager = checker._state_manager
+    grid          = state_manager.grid
+
+    saved_qpos       = env.data.qpos.copy()
+    saved_qvel       = env.data.qvel.copy()
+    saved_exceptions = list(env.collision_exceptions)
+    ok = False
+    try:
+        # 1. Place table cylinders at their cells (no held cylinder yet).
+        state = _arrangement_to_state_dict(arrangement)
+        state_manager.set_from_grounded_state(state)
+        env.controller.stop()
+        mujoco.mj_forward(env.model, env.data)
+
+        dt = env.model.opt.timestep
+
+        # 2. Solve transport IK from HOME — same seed as execution.
+        env.ik.update_configuration(env.data.qpos)  # qpos is HOME after set_from_grounded_state
+        transport_pos, transport_quat = state_manager.get_transport_pose()
+        env.ik.set_target_position(transport_pos, transport_quat)
+        if not env.ik.converge_ik(dt):
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+        transport_q = env.ik.configuration.q[:7].copy()
+
+        # 3. Teleport arm to transport_q, place cylinder at grasp-contact position
+        #    so rel_pos is correct (~[0,0,GRASP_CONTACT_OFFSET]), then attach.
+        from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
+        env.data.qpos[:7] = transport_q
+        mujoco.mj_forward(env.model, env.data)
+        ee_pos_t = env.data.site_xpos[env._ee_site_id].copy()
+        ee_mat_t = env.data.site_xmat[env._ee_site_id].reshape(3, 3).copy()
+        cyl_idx = int(cyl.split("_")[1])
+        cyl_world_pos = ee_pos_t + ee_mat_t @ np.array([0.0, 0.0, GRASP_CONTACT_OFFSET])
+        state_manager._set_cylinder_position(cyl_idx, cyl_world_pos[0], cyl_world_pos[1], cyl_world_pos[2])
+        mujoco.mj_forward(env.model, env.data)
+        env.attach_object_to_ee(cyl)  # now rel_pos ≈ [0,0,GRASP_CONTACT_OFFSET]
+
+        # 4. Compute put target geometry (same as execution and _check_put).
+        _radius, half_height = StateManager.CYLINDER_SPECS[cyl_idx]
+        half_size = np.array([_radius, _radius, half_height])
+
+        cx, cy_coord = grid.cells[dest_cell]["center"]
+        cyl_z = grid.table_height + half_height + 0.002
+        target_pos = np.array([cx, cy_coord, cyl_z])
+
+        candidates = grasp_planner.generate_candidates(target_pos, half_size)
+        front = next((c for c in candidates if c.grasp_type == GraspType.FRONT), None)
+        candidate = front if front is not None else (candidates[0] if candidates else None)
+        if candidate is None:
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+
+        put_quat     = candidate.grasp_quat
+        R_put        = quat_to_rotmat(put_quat)
+        rel_pos_ee   = env._attached["rel_pos"]
+        place_ee_pos = target_pos - R_put @ rel_pos_ee
+        approach_pos = place_ee_pos + np.array([0.0, 0.0, grasp_planner.approach_dist])
+
+        # 5. IK + RRT: transport_q → approach pose above dest_cell.
+        env.data.qpos[:7] = transport_q
+        mujoco.mj_forward(env.model, env.data)
+        env.ik.update_configuration(env.data.qpos)
+        env.ik.set_target_position(approach_pos, put_quat)
+        if not env.ik.converge_ik(dt):
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+        approach_q = env.ik.configuration.q[:7].copy()
+        if not env.is_collision_free(approach_q):
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+        path = feas_planner.plan(transport_q, approach_q, max_iterations=_FAST_PUT_ITERS)
+        if path is None:
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+
+        # 6. IK + RRT: approach pose → place-contact descent.
+        env.data.qpos[:7] = approach_q
+        mujoco.mj_forward(env.model, env.data)
+        env.ik.update_configuration(env.data.qpos)
+        env.ik.set_target_position(place_ee_pos, put_quat)
+        if not env.ik.converge_ik(dt):
+            ok = False
+            put_rrt_cache[key] = ok
+            return ok
+        place_q = env.ik.configuration.q[:7].copy()
+        path = feas_planner.plan(approach_q, place_q, max_iterations=_FAST_PUT_ITERS)
+        ok = path is not None
+
+    except Exception:
+        ok = False
+    finally:
+        env.detach_object()
+        env.data.qpos[:] = saved_qpos
+        env.data.qvel[:] = saved_qvel
+        mujoco.mj_forward(env.model, env.data)
+        env.set_collision_exceptions(saved_exceptions)
+
+    put_rrt_cache[key] = ok
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# No-drop mode — upfront put-candidate precomputation
+# ---------------------------------------------------------------------------
+
+def _precompute_put_candidates(
+    checker: ActionFeasibilityChecker,
+    initial_arrangement: frozenset,
+    placement_margin: int = 1,
+) -> dict[str, list[tuple[str, float, float]]]:
+    """Pre-compute valid put destinations for every cylinder in the scene.
+
+    Called ONCE per scene (target-independent).  For each cylinder:
+      - Sets up the MuJoCo scene ONCE (all other cylinders present, this one removed).
+      - Solves transport IK once from HOME.
+      - Attaches the cylinder to the EE.
+      - Checks placement margin + approach-corridor + IK + RRT for each free cell.
+      - Stores (cell_id, world_x, world_y) for each valid cell so callers can
+        re-sort by any target without re-running MuJoCo.
+
+    Returns  {cyl_name: [(cell_id, cx, cy), ...]  sorted by world_y DESC}.
+
+    The caller (``_find_plan_no_drop``) re-sorts by  world_y + dist_from_target
+    for the specific target of that BFS run.
+    """
+    env           = checker._env
+    grasp_planner = checker._grasp_planner
+    state_manager = checker._state_manager
+    grid          = state_manager.grid
+
+    result: dict[str, list[tuple[str, float, float]]] = {}
+    all_cell_ids = list(grid.cells.keys())
+
+    n_cyls = len(initial_arrangement)
+    for idx_c, (focus_cyl, focus_cell) in enumerate(initial_arrangement):
+        others_arr    = frozenset((c, cl) for c, cl in initial_arrangement if c != focus_cyl)
+        occupied_cells = {cl for _, cl in others_arr}
+
+        saved_qpos       = env.data.qpos.copy()
+        saved_qvel       = env.data.qvel.copy()
+        saved_exceptions = list(env.collision_exceptions)
+
+        valid_cells: list[tuple[float, str, float, float]] = []  # (world_y, cell_id, cx, cy_coord)
+
+        try:
+            # ── Scene setup ONCE per cylinder ──────────────────────────────
+            state = _arrangement_to_state_dict(others_arr)
+            state_manager.set_from_grounded_state(state)
+            env.controller.stop()
+            env.data.qpos[:8] = env.initial_qpos[:8]
+            env.data.ctrl[:8] = env.initial_ctrl[:8]
+            mujoco.mj_forward(env.model, env.data)
+
+            dt = env.model.opt.timestep
+
+            # Transport IK once
+            env.ik.update_configuration(env.data.qpos)
+            transport_pos, transport_quat = state_manager.get_transport_pose()
+            env.ik.set_target_position(transport_pos, transport_quat)
+            if not env.ik.converge_ik(dt):
+                result[focus_cyl] = []
+                print(f"  [precompute {idx_c+1}/{n_cyls}] {focus_cyl}: transport IK failed")
+                continue
+            transport_q = env.ik.configuration.q[:7].copy()
+
+            # Place cylinder at grasp-contact position so rel_pos is correct,
+            # then attach. (Hidden cylinder at [100,0,50] would give wrong rel_pos.)
+            from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
+            env.data.qpos[:7] = transport_q
+            mujoco.mj_forward(env.model, env.data)
+            ee_pos_t = env.data.site_xpos[env._ee_site_id].copy()
+            ee_mat_t = env.data.site_xmat[env._ee_site_id].reshape(3, 3).copy()
+            cyl_idx  = int(focus_cyl.split("_")[1])
+            cyl_world_pos = ee_pos_t + ee_mat_t @ np.array([0.0, 0.0, GRASP_CONTACT_OFFSET])
+            state_manager._set_cylinder_position(
+                cyl_idx, cyl_world_pos[0], cyl_world_pos[1], cyl_world_pos[2]
+            )
+            mujoco.mj_forward(env.model, env.data)
+            env.attach_object_to_ee(focus_cyl)
+
+            _radius, half_height = StateManager.CYLINDER_SPECS[cyl_idx]
+            half_size = np.array([_radius, _radius, half_height])
+
+            # ── Check each free cell ───────────────────────────────────────
+            for cell_id in all_cell_ids:
+                if cell_id in occupied_cells or cell_id == focus_cell:
+                    continue
+
+                # Placement margin (pure geometry, ~0ms)
+                parts = cell_id.split("_")
+                dx, dy_grid = int(parts[1]), int(parts[2])
+                margin_ok = True
+                for _, other_cell in others_arr:
+                    oparts = other_cell.split("_")
+                    ox, oy = int(oparts[1]), int(oparts[2])
+                    if max(abs(ox - dx), abs(oy - dy_grid)) <= placement_margin:
+                        margin_ok = False
+                        break
+                if not margin_ok:
+                    continue
+
+                # Approach-corridor check (~0ms, deterministic).
+                # For a FRONT approach the arm travels in the +y direction from
+                # the robot to the destination.  Any cylinder in the same column
+                # (same x) at a y-value strictly between the robot edge (y=0)
+                # and the destination (y=dy_grid - margin) lies directly in the
+                # approach path and will block it.  This rules out "clearly
+                # infeasible" puts without any IK or RRT calls.
+                corridor_blocked = any(
+                    ox == dx and 0 <= oy < dy_grid - placement_margin
+                    for _, other_cell in others_arr
+                    for ox, oy in [(int(other_cell.split("_")[1]),
+                                    int(other_cell.split("_")[2]))]
+                )
+                if corridor_blocked:
+                    continue
+
+                # Target geometry
+                cx, cy_coord = grid.cells[cell_id]["center"]
+                cyl_z   = grid.table_height + half_height + 0.002
+                tgt_pos = np.array([cx, cy_coord, cyl_z])
+
+                candidates = grasp_planner.generate_candidates(tgt_pos, half_size)
+                front = next((c for c in candidates if c.grasp_type == GraspType.FRONT), None)
+                candidate = front if front is not None else (candidates[0] if candidates else None)
+                if candidate is None:
+                    continue
+
+                put_quat     = candidate.grasp_quat
+                R_put        = quat_to_rotmat(put_quat)
+                rel_pos_ee   = env._attached["rel_pos"]
+                place_ee_pos = tgt_pos - R_put @ rel_pos_ee
+                approach_pos = place_ee_pos + np.array([0.0, 0.0, grasp_planner.approach_dist])
+
+                # IK approach from transport_q + collision check
+                env.data.qpos[:7] = transport_q
+                mujoco.mj_forward(env.model, env.data)
+                env.ik.update_configuration(env.data.qpos)
+                env.ik.set_target_position(approach_pos, put_quat)
+                if not env.ik.converge_ik(dt):
+                    continue
+                approach_q = env.ik.configuration.q[:7].copy()
+                if not env.is_collision_free(approach_q):
+                    continue
+
+                # IK place from approach_q + collision check
+                env.data.qpos[:7] = approach_q
+                mujoco.mj_forward(env.model, env.data)
+                env.ik.update_configuration(env.data.qpos)
+                env.ik.set_target_position(place_ee_pos, put_quat)
+                if not env.ik.converge_ik(dt):
+                    continue
+                place_q = env.ik.configuration.q[:7].copy()
+                if not env.is_collision_free(place_q):
+                    continue
+
+                # Direct placement check: teleport held cylinder to EXACTLY
+                # tgt_pos (no IK orientation error) and verify no collision.
+                # This is the most reliable guard for "does it fit here?".
+                held_info = env._attached
+                if held_info is not None:
+                    cyl_qadr = held_info["qadr"]
+                    saved_cyl_qpos = env.data.qpos[cyl_qadr:cyl_qadr + 7].copy()
+                    env.data.qpos[cyl_qadr:cyl_qadr + 3] = tgt_pos
+                    env.data.qpos[cyl_qadr + 3:cyl_qadr + 7] = np.array([1.0, 0.0, 0.0, 0.0])
+                    mujoco.mj_forward(env.model, env.data)
+                    placement_clear = env.check_collisions()
+                    env.data.qpos[cyl_qadr:cyl_qadr + 7] = saved_cyl_qpos
+                    mujoco.mj_forward(env.model, env.data)
+                    if not placement_clear:
+                        continue
+
+                # Fast path-existence check: short RRT for each segment.
+                # The scene is already set up (cylinder attached, others placed), so
+                # this reuses the current state — no extra set_from_grounded_state cost.
+                # feas_planner.plan() saves/restores qpos internally.
+                feas_planner = checker._feas_planner
+                if feas_planner.plan(
+                    transport_q, approach_q, max_iterations=_PRECOMPUTE_RRT_ITERS
+                ) is None:
+                    continue
+                if feas_planner.plan(
+                    approach_q, place_q, max_iterations=_PRECOMPUTE_RRT_ITERS
+                ) is None:
+                    continue
+
+                # Store world coords so caller can re-sort per target cheaply.
+                valid_cells.append((cy_coord, cell_id, cx, cy_coord))
+
+        except Exception as e:
+            print(f"  [precompute {idx_c+1}/{n_cyls}] {focus_cyl}: exception: {e}")
+        finally:
+            env.detach_object()
+            env.data.qpos[:] = saved_qpos
+            env.data.qvel[:] = saved_qvel
+            mujoco.mj_forward(env.model, env.data)
+            env.set_collision_exceptions(saved_exceptions)
+
+        valid_cells.sort(key=lambda x: -x[0])  # world_y DESC as default order
+        result[focus_cyl] = [(cell_id, cx, cy_c) for _, cell_id, cx, cy_c in valid_cells]
+        print(f"  [precompute {idx_c+1}/{n_cyls}] {focus_cyl}: "
+              f"{len(result[focus_cyl])} valid put destinations")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# No-drop mode — RRT plan validation
+# ---------------------------------------------------------------------------
+
+def _validate_plan_rrt(
+    checker: ActionFeasibilityChecker,
+    initial_arrangement: frozenset,
+    plan: list[tuple],
+    put_rrt_cache: dict,
+    put_ik_cache: dict | None = None,
+    pick_cache: dict | None = None,
+) -> tuple[bool, int, dict]:
+    """Validate every action in *plan* with full RRT checks via the checker.
+
+    Returns ``(True, -1, {})`` if all actions pass.
+    Returns ``(False, fail_step, fail_info)`` on the first failure.
+
+    ``fail_info`` always contains:
+      "type"         : "pick" | "put"
+      "cyl"          : cylinder name
+      "arrangement"  : table arrangement at the failing step
+      "plan_prefix"  : plan actions before the *pick* that precedes this action
+
+    For "put" failures it also contains:
+      "dest"                  : the failing destination cell
+      "arrangement_before_pick": arrangement before the pick of this cylinder
+    """
+    arrangement = initial_arrangement
+    # arr_history[i] = table arrangement just before executing plan[i]
+    arr_history: list[frozenset] = [initial_arrangement]
+
+    for i, action in enumerate(plan):
+        if action[0] == "pick":
+            cyl, cell = action[1], action[2]
+            if pick_cache is not None:
+                ok = _check_pick_no_drop(checker, arrangement, cyl, pick_cache)
+                reason = "pick_no_drop_fail"
+            else:
+                state = _arrangement_to_state_dict(arrangement)
+                ok, timing = checker.check("pick", state, cylinder_name=cyl)
+                reason = timing.get("reason", "?")
+            if not ok:
+                return False, i, {
+                    "type":        "pick",
+                    "cyl":         cyl,
+                    "cell":        cell,
+                    "arrangement": arrangement,
+                    "plan_prefix": list(plan[:i]),
+                    "reason":      reason,
+                }
+            arrangement = arrangement - {(cyl, cell)}
+
+        elif action[0] == "put":
+            cyl, dest = action[1], action[2]
+            # arrangement here has cyl already removed (picked in previous step).
+            # Use _check_put_from_transport: starts the arm at transport_q (same
+            # as execution) and checks transport_q → approach → place via RRT.
+            ok = _check_put_from_transport(
+                checker, arrangement, cyl, dest, put_rrt_cache, put_ik_cache
+            )
+            if not ok:
+                return False, i, {
+                    "type":                  "put",
+                    "cyl":                   cyl,
+                    "dest":                  dest,
+                    "arrangement":           arrangement,     # table while cyl is held
+                    "arrangement_before_pick": arr_history[i - 1],
+                    "plan_prefix":           list(plan[:i - 1]),
+                    "reason":                "rrt_put_fail",
+                }
+            arrangement = arrangement | {(cyl, dest)}
+
+        arr_history.append(arrangement)
+
+    return True, -1, {}
+
+
+# ---------------------------------------------------------------------------
+# No-drop mode — best-first search solver
 # ---------------------------------------------------------------------------
 
 def _find_plan_no_drop(
@@ -826,29 +1321,266 @@ def _find_plan_no_drop(
     initial_arrangement: frozenset,
     target: str,
     reachable_cells: frozenset,
-    grid,
     pick_cache: dict,
     put_cache: dict,
+    ik_cache: dict,
     placement_margin: int = 1,
+    max_seconds: float | None = None,
+    precomputed_puts: dict | None = None,
 ) -> list[tuple] | None:
-    """Find a no-drop plan to pick *target*.
+    """Best-first search over pick+put pairs to find a no-drop plan for *target*.
 
-    Tries three greedy orderings in sequence (MRV, LRV, random).  BFS is not
-    used because it calls the pick-feasibility check at every explored node,
-    which is exponential in the number of objects.  With fast pick checks
-    (~100ms each) the multi-ordering greedy handles >95% of scenes; the
-    remaining scenes are rejected.
+    Node priority is determined by the 1-on-1 blocker chain:
+      0 — moving a direct 1-on-1 blocker of the target (closest to robot first)
+      1 — moving a blocker of a blocker (secondary chain)
+      2 — any other pickable obstacle (BFS fallback behaviour)
+
+    Within the same priority level nodes expand in insertion order (FIFO),
+    which gives BFS semantics as a natural fallback when the heuristic runs
+    out of directed moves.
+
+    Obstacle movability is pre-filtered with the cheap IK+collision check
+    (_check_approach_ik); the definitive pick and target feasibility checks
+    still use the full IK+collision+RRT path (_check_pick_no_drop).
     """
-    for ordering in ("mrv", "lrv", "random"):
-        plan = _greedy_no_drop(
-            checker, initial_arrangement, target, reachable_cells, grid,
-            pick_cache, put_cache, ordering=ordering,
-            placement_margin=placement_margin,
+    target_cell_initial = dict(initial_arrangement).get(target)
+    if target_cell_initial is None:
+        return None
+
+    t_start = time.time()
+
+    # Pre-compute valid put destinations once, upfront.
+    # If not provided by caller, compute now.
+    if precomputed_puts is None:
+        print(f"  [BFS] precomputing put candidates for {len(initial_arrangement)} cylinders …")
+        precomputed_puts = _precompute_put_candidates(
+            checker, initial_arrangement, placement_margin
         )
-        if plan is not None:
-            return _compress_plan(
-                plan, initial_arrangement, reachable_cells, put_cache, placement_margin
+        elapsed = time.time() - t_start
+        total_cands = sum(len(v) for v in precomputed_puts.values())
+        print(f"  [BFS] precompute done in {elapsed:.1f}s — "
+              f"{total_cands} total candidates across {len(precomputed_puts)} cylinders")
+
+    # Re-sort candidates for this specific target: world_y + dist_from_target.
+    # Precompute stores (cell_id, cx, cy) — sorting is O(K) per cylinder, ~0ms.
+    target_cell_info = checker._state_manager.grid.cells.get(target_cell_initial, {})
+    tx, ty = target_cell_info.get("center", (0.0, 0.0))
+    sorted_puts: dict[str, list[str]] = {}
+    for cyl, cands in precomputed_puts.items():
+        ranked = sorted(
+            cands,
+            key=lambda t: -(t[2] + np.sqrt((t[1] - tx) ** 2 + (t[2] - ty) ** 2)),
+        )
+        sorted_puts[cyl] = [cell_id for cell_id, _, _ in ranked]
+    precomputed_puts = sorted_puts
+
+    # Heap entries: (priority, cy, counter, arrangement, plan)
+    # priority: 0=direct blocker, 1=secondary blocker, 2=other
+    # cy: lower = closer to robot = more urgent within same priority
+    # counter: insertion order for FIFO tie-breaking within same (priority, cy)
+    counter = 0
+    heap: list = [(0, 0, counter, initial_arrangement, [])]
+    visited: set[frozenset] = {initial_arrangement}
+
+    # RRT-confirmed infeasible put destinations: (table_arrangement_while_held, dest_cell)
+    # "table_arrangement_while_held" = arrangement with the moving cylinder already removed.
+    bad_put_dests: set[tuple] = set()
+
+    # Cache for _check_put_from_transport results (keyed by (arrangement, cyl, dest)).
+    put_rrt_cache: dict = {}
+    # put_ik_cache is kept for the pick-failure fallback path that calls _check_put_ik.
+    put_ik_cache: dict = {}
+
+    _DEBUG_INTERVAL = 25  # print progress every N nodes
+
+    nodes_explored = 0
+    while heap:
+        if max_seconds is not None and (time.time() - t_start) > max_seconds:
+            print(f"  [BFS] target={target} TIMEOUT after {max_seconds:.0f}s "
+                  f"nodes={nodes_explored} heap={len(heap)}")
+            return None
+
+        _, _, _, arrangement, plan = heapq.heappop(heap)
+        depth = len(plan) // 2
+        nodes_explored += 1
+
+        if nodes_explored % _DEBUG_INTERVAL == 0:
+            elapsed = time.time() - t_start
+            print(f"  [BFS] target={target} nodes={nodes_explored} "
+                  f"heap={len(heap)} depth={depth} "
+                  f"put_rrt={len(put_rrt_cache)} t={elapsed:.1f}s")
+
+        # 1-on-1 blocker analysis — computed first because it uses isolation
+        # keys that cache well, and its result lets us skip the expensive
+        # pick check (~100ms) whenever blockers are still present.
+        direct = _direct_blockers_1on1(checker, arrangement, target, ik_cache)
+        direct_cyls = {cyl for cyl, _ in direct}
+
+        # No direct blockers remain — check if approach is clear in the full scene.
+        # Use the fast IK+collision check (5ms, deterministic) rather than
+        # the stochastic RRT pick check (100ms), which was creating false
+        # negatives for back-row cylinders and killing long-plan candidates.
+        # If the approach is IK-feasible and collision-free with all remaining
+        # cylinders present, the pick is achievable — the plan is valid.
+        if not direct_cyls:
+            # Also require target not to be surrounded — direct blockers may
+            # not capture cylinders behind/diagonal to the target.
+            if (_pick_neighbor_count(arrangement, target) < _MAX_PICK_NEIGHBORS
+                    and _check_approach_ik(checker, arrangement, target, ik_cache, front_only=True)):
+                target_cell = dict(arrangement)[target]
+                candidate_plan = plan + [("pick", target, target_cell)]
+
+                # Validate every action with full RRT — the static check only
+                # verifies endpoint reachability, not path existence.
+                rrt_ok, fail_step, fail_info = _validate_plan_rrt(
+                    checker, initial_arrangement, candidate_plan,
+                    put_rrt_cache, put_ik_cache, pick_cache
+                )
+                if rrt_ok:
+                    return candidate_plan
+
+                # ── Feed RRT failure back into BFS ─────────────────────────
+                if fail_info["type"] == "put":
+                    # Blacklist this (table_state, destination) pair so it is
+                    # skipped in all future expansions.
+                    bad_put_dests.add((fail_info["arrangement"], fail_info["dest"]))
+
+                    # Push the arrangement just before the failed pick+put so
+                    # the BFS can try different put destinations for that move.
+                    arr_before = fail_info["arrangement_before_pick"]
+                    prefix     = fail_info["plan_prefix"]
+                    depth_before = len(prefix) // 2
+                    if depth_before < _BFS_MAX_DEPTH:
+                        # Do NOT guard with visited — we want to re-expand this
+                        # arrangement with the updated bad_put_dests blacklist.
+                        counter += 1
+                        heapq.heappush(heap, (1, 0, counter, arr_before, prefix))
+
+                elif fail_info["type"] == "pick":
+                    # The static check passed but RRT couldn't find a path.
+                    # Use leave-one-out RRT to identify which cylinders block the
+                    # trajectory (not just the endpoint).
+                    arrangement_failed = fail_info["arrangement"]
+                    prefix             = fail_info["plan_prefix"]
+                    cyl_failed         = fail_info["cyl"]
+                    depth_before       = len(prefix) // 2
+
+                    if depth_before < _BFS_MAX_DEPTH:
+                        for pb_cyl, pb_cell in arrangement_failed:
+                            if pb_cyl == cyl_failed:
+                                continue
+                            reduced = arrangement_failed - {(pb_cyl, pb_cell)}
+                            state   = _arrangement_to_state_dict(reduced)
+                            pick_ok, _ = checker.check("pick", state, cylinder_name=cyl_failed)
+                            if not pick_ok:
+                                continue
+                            # pb_cyl is a trajectory blocker — push moves for it
+                            pb_cy      = int(pb_cell.split("_")[2])
+                            pb_others  = frozenset(
+                                (c, cl) for c, cl in arrangement_failed if c != pb_cyl
+                            )
+                            pb_put_count = 0
+                            pb_cands = precomputed_puts.get(pb_cyl, [])
+                            for dest in pb_cands:
+                                if pb_put_count >= _BFS_MAX_PUT_CANDS:
+                                    break
+                                if (pb_others, dest) in bad_put_dests:
+                                    continue
+                                if not _check_put_no_drop(
+                                    arrangement_failed,
+                                    pb_cyl, dest, put_cache, placement_margin
+                                ):
+                                    continue
+                                pb_put_count += 1
+                                new_arr = (
+                                    (arrangement_failed - {(pb_cyl, pb_cell)})
+                                    | {(pb_cyl, dest)}
+                                )
+                                if new_arr in visited:
+                                    continue
+                                visited.add(new_arr)
+                                counter += 1
+                                heapq.heappush(heap, (
+                                    1, pb_cy, counter, new_arr,
+                                    prefix + [
+                                        ("pick", pb_cyl, pb_cell),
+                                        ("put",  pb_cyl, dest),
+                                    ],
+                                ))
+
+            # Approach is blocked in the full scene despite no 1-on-1 blocker —
+            # combination block; can't help by moving obstacles, dead end.
+            continue
+
+        # Prune: if more blockers remain than budget allows, no solution possible.
+        if depth + len(direct_cyls) > _BFS_MAX_DEPTH or depth >= _BFS_MAX_DEPTH:
+            continue
+
+        # Chain walking: focus on ONE cylinder per expansion.
+        # "direct" is sorted by cy ascending (closest to robot first).
+        # Walk down the chain: if the closest direct blocker is itself blocked,
+        # recurse one level into its blocker rather than expanding everything.
+        arrangement_dict = dict(arrangement)
+
+        focus_cyl: str | None = None
+        focus_cell: str | None = None
+        focus_priority: int = 0
+
+        candidate_cyl, candidate_cell = direct[0]
+        isolated = frozenset([(candidate_cyl, candidate_cell)])
+        if _check_approach_ik(checker, isolated, candidate_cyl, ik_cache):
+            # Closest direct blocker is movable — focus on it.
+            focus_cyl, focus_cell, focus_priority = candidate_cyl, candidate_cell, 0
+        else:
+            # Closest direct blocker is itself blocked — walk one level deeper.
+            sub_blockers = _direct_blockers_1on1(
+                checker, arrangement, candidate_cyl, ik_cache
             )
+            for s_cyl, s_cell in sub_blockers:
+                isolated_s = frozenset([(s_cyl, s_cell)])
+                if _check_approach_ik(checker, isolated_s, s_cyl, ik_cache):
+                    focus_cyl, focus_cell, focus_priority = s_cyl, s_cell, 1
+                    break
+
+        if focus_cyl is None:
+            continue  # no movable cylinder found — dead end
+
+        cparts = focus_cell.split("_")
+        cy = int(cparts[2])
+
+        # Density guard: if focus_cyl is surrounded by ≥ _MAX_PICK_NEIGHBORS
+        # cylinders in the current full arrangement it is almost certainly
+        # unpickable — skip without generating any pick+put pairs.
+        if _pick_neighbor_count(arrangement, focus_cyl) >= _MAX_PICK_NEIGHBORS:
+            continue
+
+        focus_others = frozenset(
+            (c, cl) for c, cl in arrangement if c != focus_cyl
+        )
+        # Use precomputed put candidates (IK+collision already verified upfront).
+        # Only check current-arrangement occupancy/margin via _check_put_no_drop.
+        put_count = 0
+        cands = precomputed_puts.get(focus_cyl, [])
+        for dest in cands:
+            if put_count >= _BFS_MAX_PUT_CANDS:
+                break
+            if (focus_others, dest) in bad_put_dests:
+                continue  # RRT-confirmed infeasible — skip
+            if not _check_put_no_drop(
+                arrangement, focus_cyl, dest, put_cache, placement_margin
+            ):
+                continue
+            put_count += 1
+            new_arr = (arrangement - {(focus_cyl, focus_cell)}) | {(focus_cyl, dest)}
+            if new_arr in visited:
+                continue
+            visited.add(new_arr)
+            counter += 1
+            heapq.heappush(heap, (
+                focus_priority, cy, counter,
+                new_arr, plan + [("pick", focus_cyl, focus_cell), ("put", focus_cyl, dest)],
+            ))
+
     return None
 
 
@@ -859,7 +1591,6 @@ def _find_plan_no_drop(
 def _compress_plan(
     plan: list[tuple],
     initial_arrangement: frozenset,
-    reachable_cells: frozenset,
     put_cache: dict,
     placement_margin: int = 1,
 ) -> list[tuple]:
@@ -896,7 +1627,7 @@ def _compress_plan(
                         i += 4
                         changed = True
                         continue
-                    if _check_put_no_drop(reachable_cells, arr, cyl, c3,
+                    if _check_put_no_drop(arr, cyl, c3,
                                          put_cache, placement_margin):
                         new_result.append(("pick", cyl, c1))
                         arr = arr - {(cyl, c1)}
@@ -921,37 +1652,25 @@ def _select_target_no_drop(
     initial_arrangement: frozenset,
     cylinders: list[str],
     reachable_cells: frozenset,
-    grid,
     pick_cache: dict,
     put_cache: dict,
+    ik_cache: dict,
     placement_margin: int = 1,
+    precomputed_puts: dict | None = None,
 ) -> tuple[str, list[tuple]] | tuple[None, None]:
-    """Run _find_plan_no_drop for every cylinder and select target by plan-length diversity.
+    """Pick one uniformly random target cylinder and find a no-drop plan for it.
 
-    The shared caches mean subsequent cylinder queries reuse earlier results,
-    so the overhead of running for all cylinders is modest.
-
-    Returns (target_cylinder, plan) or (None, None).
+    Returns (target_cylinder, plan) or (None, None) if no plan exists.
+    All filtering (min_plan_len, Gaussian shaping) is handled by the caller.
+    Pass precomputed_puts to avoid re-running the precompute for each target.
     """
-    plans: dict[str, list[tuple] | None] = {}
-
-    for cyl in cylinders:
-        plans[cyl] = _find_plan_no_drop(
-            checker, initial_arrangement, cyl, reachable_cells, grid,
-            pick_cache, put_cache, placement_margin=placement_margin,
-        )
-
-    by_length: dict[int, list[str]] = {}
-    for cyl, plan in plans.items():
-        if plan is not None:
-            by_length.setdefault(len(plan), []).append(cyl)
-
-    if not by_length:
-        return None, None
-
-    chosen_length = int(np.random.choice(sorted(by_length.keys())))
-    target = str(np.random.choice(by_length[chosen_length]))
-    return target, plans[target]
+    target = str(np.random.choice(cylinders))
+    plan = _find_plan_no_drop(
+        checker, initial_arrangement, target, reachable_cells,
+        pick_cache, put_cache, ik_cache, placement_margin=placement_margin,
+        precomputed_puts=precomputed_puts,
+    )
+    return (target, plan) if plan is not None else (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1790,7 @@ def _init_stats() -> dict:
     return {
         "attempts": 0, "accepted": 0,
         "reject_min_objects": 0, "reject_no_plan": 0,
+        "reject_plan_len": 0, "reject_distribution": 0,
         "requested_hist": Counter(), "actual_hist": Counter(),
         "plan_len_hist": Counter(), "gen_seconds": [],
     }
@@ -1079,7 +1799,8 @@ def _init_stats() -> dict:
 def _merge_stats(items: list[dict]) -> dict:
     merged = _init_stats()
     for s in items:
-        for k in ("attempts", "accepted", "reject_min_objects", "reject_no_plan"):
+        for k in ("attempts", "accepted", "reject_min_objects", "reject_no_plan",
+                  "reject_plan_len", "reject_distribution"):
             merged[k] += s[k]
         for k in ("requested_hist", "actual_hist", "plan_len_hist"):
             merged[k].update(s[k])
@@ -1092,7 +1813,9 @@ def _print_stats(label: str, stats: dict, wall_time: float) -> None:
     print(f"  [{label}] attempts={n} accepted={ok} "
           f"acceptance={ok/max(n,1):.3f}")
     print(f"  [{label}] rejects: min_objects={stats['reject_min_objects']} "
-          f"no_plan={stats['reject_no_plan']}")
+          f"no_plan={stats['reject_no_plan']} "
+          f"plan_len={stats['reject_plan_len']} "
+          f"distribution={stats['reject_distribution']}")
     print(f"  [{label}] plan_len={dict(sorted(stats['plan_len_hist'].items()))}")
     if stats["gen_seconds"]:
         arr = np.array(stats["gen_seconds"])
@@ -1120,6 +1843,7 @@ def _generate_split(
     output_base: Path,
     pick_cache: dict,
     put_cache: dict,
+    ik_cache: dict,
     wandb_run=None,
 ) -> dict:
     if count <= 0:
@@ -1165,14 +1889,39 @@ def _generate_split(
             plan = _drop_plan_to_tuples(drop_plan, cylinder_cells)
         else:
             initial_arrangement = _make_arrangement(state)
-            target, plan = _select_target_no_drop(
-                checker, initial_arrangement, cylinders, reachable_cells, grid,
-                pick_cache, put_cache,
+            # Precompute once per scene; _select_target_no_drop re-sorts per target.
+            scene_precomputed = _precompute_put_candidates(
+                checker, initial_arrangement,
                 placement_margin=args.placement_margin,
+            )
+            target, plan = _select_target_no_drop(
+                checker, initial_arrangement, cylinders, reachable_cells,
+                pick_cache, put_cache, ik_cache,
+                placement_margin=args.placement_margin,
+                precomputed_puts=scene_precomputed,
             )
             if plan is None:
                 stats["reject_no_plan"] += 1
                 continue
+
+            # Hard minimum plan length filter.
+            if len(plan) < args.min_plan_len:
+                stats["reject_plan_len"] += 1
+                continue
+
+            # Gaussian distribution shaping (optional).
+            # Acceptance probability peaks at plan_len == plan_len_mean and
+            # falls off as exp(-0.5 * ((k - mean) / std)^2), so plans near
+            # the target length are always kept and distant lengths are
+            # down-sampled proportionally.
+            if args.plan_len_mean is not None:
+                k = len(plan)
+                p = np.exp(
+                    -0.5 * ((k - args.plan_len_mean) / args.plan_len_std) ** 2
+                )
+                if np.random.random() > p:
+                    stats["reject_distribution"] += 1
+                    continue
 
             # Restore initial scene — checker.check() leaves cylinders at
             # whatever position _init_state last set them to.
@@ -1263,6 +2012,7 @@ def _worker(worker_id: int, split: str, start_idx: int, count: int,
     # Per-process global caches for no-drop mode
     pick_cache: dict = {}
     put_cache:  dict = {}
+    ik_cache:   dict = {}
 
     stats      = _init_stats()
     generated  = 0
@@ -1298,14 +2048,39 @@ def _worker(worker_id: int, split: str, start_idx: int, count: int,
             plan = _drop_plan_to_tuples(drop_plan, cylinder_cells)
         else:
             initial_arrangement = _make_arrangement(state)
-            target, plan = _select_target_no_drop(
-                checker, initial_arrangement, cylinders, reachable_cells, grid,
-                pick_cache, put_cache,
+            # Precompute once per scene; _select_target_no_drop re-sorts per target.
+            scene_precomputed = _precompute_put_candidates(
+                checker, initial_arrangement,
                 placement_margin=args.placement_margin,
+            )
+            target, plan = _select_target_no_drop(
+                checker, initial_arrangement, cylinders, reachable_cells,
+                pick_cache, put_cache, ik_cache,
+                placement_margin=args.placement_margin,
+                precomputed_puts=scene_precomputed,
             )
             if plan is None:
                 stats["reject_no_plan"] += 1
                 continue
+
+            # Hard minimum plan length filter.
+            if len(plan) < args.min_plan_len:
+                stats["reject_plan_len"] += 1
+                continue
+
+            # Gaussian distribution shaping (optional).
+            # Acceptance probability peaks at plan_len == plan_len_mean and
+            # falls off as exp(-0.5 * ((k - mean) / std)^2), so plans near
+            # the target length are always kept and distant lengths are
+            # down-sampled proportionally.
+            if args.plan_len_mean is not None:
+                k = len(plan)
+                p = np.exp(
+                    -0.5 * ((k - args.plan_len_mean) / args.plan_len_std) ** 2
+                )
+                if np.random.random() > p:
+                    stats["reject_distribution"] += 1
+                    continue
 
             # Restore initial scene — checker.check() leaves cylinders at
             # whatever position _init_state last set them to.
@@ -1478,6 +2253,7 @@ def main() -> None:
         # Per-process global caches for no-drop mode
         pick_cache: dict = {}
         put_cache:  dict = {}
+        ik_cache:   dict = {}
 
         for split, n in [("train", args.num_train),
                           ("test",  args.num_test),
@@ -1486,7 +2262,7 @@ def main() -> None:
                 split, n, args,
                 env, planner, feas_planner, checker, reachable_cells,
                 grid, state_manager, grasp_planner,
-                output_base, pick_cache, put_cache, wandb_run,
+                output_base, pick_cache, put_cache, ik_cache, wandb_run,
             )
             all_stats.append(s)
 

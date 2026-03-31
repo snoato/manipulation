@@ -12,6 +12,7 @@ Usage::
 
     cd examples
     python pddl_interactive.py <domain.pddl> <problem.pddl>
+    python pddl_interactive.py <domain.pddl> <problem.pddl> --plan <plan.pddl.plan>
 
 Commands at the interactive prompt::
 
@@ -399,16 +400,55 @@ def _execute_put(env, planner, grasp_planner, grid, cyl_name, cell_id):
     env.detach_object()
     env.controller.open_gripper()
     env.rest(1.5)
+
+    # Retreat: lift back to approach height so the arm is clear for the next
+    # planning step.  Add a collision exception for the just-placed cylinder
+    # because the gripper is still very close to it right after release.
+    print("  Pulling back ...")
+    env.add_collision_exception(cyl_name)
+    retreat_path = planner.plan_to_pose(approach_pos, put_quat,
+                                        dt=dt, max_iterations=_RRT_ITERS_FINE)
+    env.remove_collision_exception(cyl_name)
+    if retreat_path is not None:
+        env.execute_path(retreat_path, planner, step_size=0.01)
+        _wait_idle(env)
+    else:
+        print("  Pullback planning failed — continuing anyway.")
     return True
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
+
+def _parse_plan_file(path: str) -> list[tuple[str, ...]]:
+    """Parse a .pddl.plan file into a list of action tuples.
+
+    Lines like ``(pick cylinder_0 cell_7_6)`` become ``('pick', 'cylinder_0')``.
+    Lines like ``(put  cylinder_0 cell_2_3)`` become ``('put', 'cylinder_0', 'cell_2_3')``.
+    Comment lines (starting with ``;``) and blank lines are skipped.
+    """
+    actions = []
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith(";"):
+            continue
+        # Strip surrounding parens
+        inner = line.strip("()")
+        parts = inner.split()
+        if parts[0] == "pick":
+            actions.append(("pick", parts[1]))          # cell arg unused at execution
+        elif parts[0] == "put":
+            actions.append(("put", parts[1], parts[2]))
+    return actions
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Interactive PDDL-driven manipulation demo")
     parser.add_argument("domain",  help="Path to PDDL domain file (not parsed, for reference)")
     parser.add_argument("problem", help="Path to PDDL problem file")
+    parser.add_argument("--plan",  help="Path to .pddl.plan file for automatic execution")
+    parser.add_argument("--delay", type=float, default=1.0,
+                        help="Seconds to pause between actions in auto mode (default: 1.0)")
     args = parser.parse_args()
 
     problem_text = Path(args.problem).read_text()
@@ -454,13 +494,62 @@ def main():
     )
 
     print(f"\nLoaded: {Path(args.problem).name}")
-    print("Opening viewer — type actions in this terminal.\n")
 
     # ── Readline: history + tab-completion ────────────────────────────────
     completer = _Completer(grid)
     if _READLINE:
         _rl.set_completer(completer.complete)
         _rl.set_completer_delims(" \t")  # only split on whitespace
+
+    # ── Auto mode: execute a plan file non-interactively ──────────────────
+    if args.plan:
+        plan_actions = _parse_plan_file(args.plan)
+        print(f"Auto-executing {len(plan_actions)} actions from {Path(args.plan).name}")
+        n_ok = 0
+        with env.launch_viewer() as viewer:
+            env.rest(0.5)
+            for i, action in enumerate(plan_actions):
+                if not viewer.is_running():
+                    break
+                print(f"\n[{i+1}/{len(plan_actions)}] {' '.join(action)}")
+                if action[0] == "pick":
+                    cyl = action[1]
+                    ok = _execute_pick(env, planner, grasp_planner, cyl, state_manager)
+                    if ok:
+                        state_manager.gripper_holding = cyl
+                        print(f"  pick({cyl}) OK")
+                        n_ok += 1
+                    elif env._attached is not None:
+                        state_manager.gripper_holding = cyl
+                        print(f"  pick({cyl}) grasped but transport failed")
+                    else:
+                        print(f"  pick({cyl}) FAILED — aborting plan")
+                        break
+                elif action[0] == "put":
+                    cyl, cell_id = action[1], action[2]
+                    ok = _execute_put(env, planner, grasp_planner, grid, cyl, cell_id)
+                    if ok:
+                        state_manager.gripper_holding = None
+                        print(f"  put({cyl}, {cell_id}) OK")
+                        n_ok += 1
+                    else:
+                        print(f"  put({cyl}, {cell_id}) FAILED — aborting plan")
+                        break
+                if args.delay > 0:
+                    env.rest(args.delay)
+            else:
+                print(f"\n{'='*50}")
+                print(f"Plan COMPLETE — {n_ok}/{len(plan_actions)} actions succeeded.")
+                print(f"{'='*50}")
+                env.rest(3.0)   # pause so user can see final state
+                return
+            print(f"\n{'='*50}")
+            print(f"Plan FAILED at action {n_ok+1}/{len(plan_actions)}.")
+            print(f"{'='*50}")
+            env.rest(3.0)
+        return
+
+    print("Opening viewer — type actions in this terminal.\n")
 
     with env.launch_viewer() as viewer:
         # Let scene settle visually

@@ -75,7 +75,14 @@ class RRTStar(BaseMotionPlanner):
         steps: int = None,
     ) -> bool:
         if steps is None:
-            steps = self.collision_check_steps
+            # Scale checks proportionally to path length so that smooth_path
+            # shortcuts (which can span many step_size-length edges) are checked
+            # at the same resolution as individual RRT edges.
+            dist = float(np.linalg.norm(config2 - config1))
+            steps = max(
+                self.collision_check_steps,
+                int(np.ceil(dist / self.step_size)) * self.collision_check_steps,
+            )
         # Use optimized batch method from environment if available
         if hasattr(self.env, 'is_path_collision_free'):
             return self.env.is_path_collision_free(config1, config2, steps)

@@ -72,6 +72,27 @@ class FrankaEnvironment(BaseEnvironment):
 
         self.collision_exceptions = []
 
+        # Enable contact detection and add a clearance margin for the lower-arm
+        # collision geoms (link5/6/7).  In base_panda.xml the collision class
+        # sets contype=0 conaffinity=0 on all arm mesh geoms, so they never
+        # generate contacts with scene objects.  The hand and fingers already
+        # have dedicated contact-capable geoms (hand_capsule, fingertip pads).
+        # We fix link5/6/7 here: set conaffinity=1 so cylinder contacts are
+        # generated, and add a 3mm margin so the arm must stay 3mm clear.
+        # check_collisions flags dist < 0.001, giving ~2mm effective buffer.
+        _ARM_LINK_BODIES = {"link5", "link6", "link7"}
+        _ARM_COLLISION_MARGIN = 0.003  # 3 mm contact window
+        for geom_id in range(self.model.ngeom):
+            if self.model.geom_group[geom_id] != 3:
+                continue  # not a collision-class geom — skip
+            body_id = self.model.geom_bodyid[geom_id]
+            body_name = mujoco.mj_id2name(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, body_id
+            )
+            if body_name in _ARM_LINK_BODIES:
+                self.model.geom_conaffinity[geom_id] = 1
+                self.model.geom_margin[geom_id] = _ARM_COLLISION_MARGIN
+
         # Set initial position
         self.data.qpos[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
         self.data.ctrl[:8] = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
@@ -191,7 +212,7 @@ class FrankaEnvironment(BaseEnvironment):
             if b1_is_robot == b2_is_robot:
                 continue
                 
-            if contact.dist < -1e-4:
+            if contact.dist < 0.001:  # flag within 2 mm of margin window
                 return False
                 
         return True
