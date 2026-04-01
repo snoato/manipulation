@@ -3,7 +3,7 @@
 from pathlib import Path
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, SCENE_DEFAULT
+from tampanda import FrankaEnvironment, RRTStar, SCENE_DEFAULT
 
 _XML = SCENE_DEFAULT
 

@@ -21,8 +21,8 @@ from pathlib import Path
 import numpy as np
 import mujoco
 
-from manipulation import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_BLOCKS
-from manipulation.environments.franka_env import _EFF_KP
+from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_BLOCKS
+from tampanda.environments.franka_env import _EFF_KP
 
 _XML = SCENE_BLOCKS
 

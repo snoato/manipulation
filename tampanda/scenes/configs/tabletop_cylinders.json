@@ -1,0 +1,20 @@
+{
+  "resources": {
+    "cylinder": "../templates/objects/cylinder.xml",
+    "table":    "../templates/objects/table.xml"
+  },
+  "objects": [
+    {"type": "table",    "pos": [0.4,  0.0,  0.0]},
+    {"type": "cylinder", "name": "cyl_red",    "pos": [0.30,  0.10, 0.35], "rgba": [1.0, 0.2, 0.2, 1.0]},
+    {"type": "cylinder", "name": "cyl_green",  "pos": [0.45,  0.10, 0.35], "rgba": [0.2, 1.0, 0.2, 1.0]},
+    {"type": "cylinder", "name": "cyl_blue",   "pos": [0.60,  0.10, 0.35], "rgba": [0.2, 0.2, 1.0, 1.0]},
+    {"type": "cylinder", "name": "cyl_yellow", "pos": [0.375,-0.10, 0.35], "rgba": [1.0, 1.0, 0.2, 1.0]},
+    {"type": "cylinder", "name": "cyl_purple", "pos": [0.525,-0.10, 0.35], "rgba": [1.0, 0.2, 1.0, 1.0]}
+  ],
+  "options": {
+    "timestep": "0.005",
+    "iterations": "5",
+    "ls_iterations": "8",
+    "integrator": "implicitfast"
+  }
+}

@@ -25,9 +25,9 @@ import matplotlib.pyplot as plt
 import mujoco
 import numpy as np
 
-from manipulation import FrankaEnvironment, SCENE_SYMBOLIC
-from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
-from manipulation.symbolic.domains.tabletop.state_manager import StateManager
+from tampanda import FrankaEnvironment, SCENE_SYMBOLIC
+from tampanda.symbolic.domains.tabletop.grid_domain import GridDomain
+from tampanda.symbolic.domains.tabletop.state_manager import StateManager
 
 _XML = SCENE_SYMBOLIC
 

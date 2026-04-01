@@ -22,10 +22,10 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
-from manipulation.planners.grasp_planner import GraspPlanner
-from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
-from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
+from tampanda import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda.planners.grasp_planner import GraspPlanner
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 
 _XML = SCENE_SYMBOLIC
 

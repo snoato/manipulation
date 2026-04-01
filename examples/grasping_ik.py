@@ -3,7 +3,7 @@
 from pathlib import Path
 import time
 
-from manipulation import FrankaEnvironment, ControllerStatus, SCENE_TEST
+from tampanda import FrankaEnvironment, ControllerStatus, SCENE_TEST
 
 _XML = SCENE_TEST
 

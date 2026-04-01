@@ -1,0 +1,7 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- 6cm cube: mass=0.216 kg -->
+  <inertial mass="0.216" pos="0 0 0" diaginertia="0.0004 0.0004 0.0004"/>
+  <geom name="_geom" type="box" size="0.03 0.03 0.03" rgba="0.8 0.2 0.2 1"
+        solimp="0.99 0.99 0.01" solref="0.02 1"/>
+</body>

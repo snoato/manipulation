@@ -93,13 +93,14 @@ class _Completer:
 
         return candidates[idx] if idx < len(candidates) else None
 
-from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC, ControllerStatus
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
-from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
-from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
+from tampanda import RRTStar, FeasibilityRRT, ControllerStatus
+from tampanda.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
+from tampanda.planners.robust_planner import RobustPlanner
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
+from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 
 # ── Scene configuration ────────────────────────────────────────────────────
-_XML           = SCENE_SYMBOLIC
 _GRID_WIDTH    = 0.4
 _GRID_HEIGHT   = 0.3
 _CELL_SIZE     = 0.04
@@ -191,13 +192,13 @@ def _extract_init_section(pddl_text):
 
 
 def _make_env_and_grid():
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
     grid = GridDomain(
         model=env.model,
         cell_size=_CELL_SIZE,
         working_area=(_GRID_WIDTH, _GRID_HEIGHT),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=_GRID_OFFSET_X,
         grid_offset_y=_GRID_OFFSET_Y,
     )
@@ -245,17 +246,10 @@ def _execute_pick(env, planner, grasp_planner, cyl_name, state_manager):
     env.attach_object_to_ee(cyl_name)
     env.rest(1.0)
 
-    # Move directly to the transport pose instead of a fixed lift.
-    # The collision exception is still active so cylinder contacts are ignored.
-    # We also temporarily suspend _collision_held_body during this planning step:
-    # the exception already covers all cylinder contacts, so the per-check
-    # teleportation only adds cost and can cause false positives right after
-    # grasping (cylinder still near the table surface).  Restored before put.
     print("  Moving to transport pose ...")
     transport_pos, transport_quat = state_manager.get_transport_pose()
     # Seed IK from HOME (same seed used by set_from_grounded_state in the
     # feasibility checker) so both converge to the same joint configuration.
-    # Different seeds can reach different local optima with the same EE pose.
     home_full = env.data.qpos.copy()
     home_full[:8] = _HOME_QPOS
     env.ik.update_configuration(home_full)
@@ -266,38 +260,37 @@ def _execute_pick(env, planner, grasp_planner, cyl_name, state_manager):
         return False
     transport_q = env.ik.configuration.q[:7]
 
-    # Transport goes UP (arm moving away from table), so link7 sweeping near
-    # table cylinders en-route is safe and should not block planning.
-    # We DO want link7 collision-checking during put (arm coming DOWN near
-    # cylinders).  Temporarily remove link7 + held body for this one plan call.
+    # Lift the cylinder straight up before transport so it clears table-height
+    # neighbours.  The collision exception is still active during this short
+    # move, so no false positives from the cylinder touching immediate
+    # neighbours at the grasp position.  If the lift fails we skip it and
+    # proceed with transport planning anyway.
+    ee_pos   = env.data.site_xpos[env._ee_site_id].copy()
+    lift_pos = ee_pos + np.array([0.0, 0.0, 0.12])
+    lift_path = planner.plan_to_pose(lift_pos, cand.grasp_quat,
+                                     dt=dt, max_iterations=_RRT_ITERS_FINE)
+    if lift_path is not None:
+        env.execute_path(lift_path, planner, step_size=0.005)
+        _wait_idle(env)
+
+    # During transport planning temporarily disable link7 collision and the
+    # held-body teleportation.  The cylinder exception already covers
+    # cylinder–cylinder contacts; _collision_held_body would re-add the held
+    # cylinder at the current EE position on every is_collision_free call,
+    # which can cause false positives right after grasping.
     link7_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "link7")
     saved_body_ids = env._collision_body_ids
     saved_held     = env._collision_held_body
-    env._collision_body_ids = saved_body_ids - {link7_id}
+    env._collision_body_ids  = saved_body_ids - {link7_id}
     env._collision_held_body = None
+
     path = planner.plan(env.data.qpos[:7], transport_q, max_iterations=_RRT_ITERS)
+
     env._collision_body_ids  = saved_body_ids
     env._collision_held_body = saved_held
 
     if path is None:
-        # Diagnose: check whether start or goal is in collision (same conditions as planning)
-        saved_body_ids = env._collision_body_ids
-        saved_held     = env._collision_held_body
-        env._collision_body_ids  = saved_body_ids - {link7_id}
-        env._collision_held_body = None
-        start_ok = env.is_collision_free(env.data.qpos[:7])
-        goal_ok  = env.is_collision_free(transport_q)
-        env._collision_body_ids  = saved_body_ids
-        env._collision_held_body = saved_held
-        if not start_ok:
-            print("  Transport failed: start config in collision.")
-        elif not goal_ok:
-            print("  Transport failed: goal config in collision.")
-        else:
-            print("  Transport failed: no path found in planning budget.")
-        # Don't release — arm is still holding the cylinder.
-        # Clear the collision exception (no longer needed) and let the user
-        # decide: try 'put' directly from the grasp position or 'drop'.
+        print("  Transport planning failed.")
         env.clear_collision_exceptions()
         return False
     env.execute_path(path, planner, step_size=0.01)
@@ -449,6 +442,9 @@ def main():
     parser.add_argument("--plan",  help="Path to .pddl.plan file for automatic execution")
     parser.add_argument("--delay", type=float, default=1.0,
                         help="Seconds to pause between actions in auto mode (default: 1.0)")
+    parser.add_argument("--strategy", default="combined",
+                        choices=RobustPlanner.STRATEGIES,
+                        help="Execution planning strategy (default: combined)")
     args = parser.parse_args()
 
     problem_text = Path(args.problem).read_text()
@@ -461,10 +457,23 @@ def main():
 
     # ── Main env: viewer + execution ───────────────────────────────────────
     env, grid = _make_env_and_grid()
-    planner = RRTStar(env)
-    planner.step_size             = 0.2
-    planner.goal_sample_rate      = 0.2
-    planner.collision_check_steps = _COL_STEPS
+    _primary = RRTStar(env)
+    _primary.step_size             = 0.2
+    _primary.goal_sample_rate      = 0.2
+    _primary.collision_check_steps = _COL_STEPS
+    if args.strategy == "baseline":
+        planner = _primary
+    else:
+        _exec_fallback = FeasibilityRRT(env)
+        _exec_fallback.step_size             = 0.2
+        _exec_fallback.collision_check_steps = _COL_STEPS
+        planner = RobustPlanner(
+            primary  = _primary,
+            fallback = _exec_fallback,
+            home_q   = _HOME_QPOS[:7],
+            strategy = args.strategy,
+        )
+    print(f"Execution strategy: {args.strategy}")
 
     state_manager = StateManager(grid, env)
     grasp_planner = GraspPlanner(table_z=grid.table_height)

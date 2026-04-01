@@ -20,11 +20,11 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType
-from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
-from manipulation.symbolic.domains.tabletop.state_manager import StateManager
-from manipulation.symbolic.domains.tabletop.generate_data import (
+from tampanda import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda.planners.grasp_planner import GraspPlanner, GraspType
+from tampanda.symbolic.domains.tabletop.grid_domain import GridDomain
+from tampanda.symbolic.domains.tabletop.state_manager import StateManager
+from tampanda.symbolic.domains.tabletop.generate_data import (
     _patch_fast_step, _sample_state, _select_target,
 )
 

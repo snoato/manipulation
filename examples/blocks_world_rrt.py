@@ -7,10 +7,10 @@ from pathlib import Path
 import time
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_BLOCKS
-from manipulation.planners import PickPlaceExecutor
-from manipulation.planners.grasp_planner import GRASP_CONTACT_OFFSET
-from manipulation.symbolic.domains.blocks import BlocksDomain, BlocksStateManager
+from tampanda import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_BLOCKS
+from tampanda.planners import PickPlaceExecutor
+from tampanda.planners.grasp_planner import GRASP_CONTACT_OFFSET
+from tampanda.symbolic.domains.blocks import BlocksDomain, BlocksStateManager
 
 _HERE = Path(__file__).parent
 _XML  = SCENE_BLOCKS

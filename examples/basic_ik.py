@@ -3,7 +3,7 @@
 from pathlib import Path
 import numpy as np
 
-from manipulation import FrankaEnvironment, SCENE_MJX
+from tampanda import FrankaEnvironment, SCENE_MJX
 
 _XML = SCENE_MJX
 

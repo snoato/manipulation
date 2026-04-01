@@ -5,12 +5,11 @@ import time
 import re
 import matplotlib.pyplot as plt
 
-from manipulation import FrankaEnvironment, SCENE_SYMBOLIC
-from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
-from manipulation.symbolic.domains.tabletop.state_manager import extract_grid_dimensions_from_pddl
+from tampanda.symbolic import GridDomain, StateManager, visualize_grid_state
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
+from tampanda.symbolic.domains.tabletop.state_manager import extract_grid_dimensions_from_pddl
 
 _HERE = Path(__file__).parent
-_XML = SCENE_SYMBOLIC
 _DOMAIN_DIR = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl"
 _PROBLEM_DIR = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl" / "problems"
 _VIZ_DIR = _HERE / ".." / "manipulation" / "symbolic" / "viz"
@@ -23,7 +22,7 @@ def main():
     
     # Initialize environment
     print("\n1. Loading environment...")
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
     
     print("\n2. Preparing to generate problems with varying grid dimensions...")
     print("   Grid sizes: 10x10, 20x20, 40x40, 60x60, 100x100")
@@ -51,7 +50,7 @@ def main():
             cell_size=cell_size,
             working_area=working_area,
             table_body_name="simple_table",
-            table_geom_name="table_surface"
+            table_geom_name="simple_table_surface"
         )
         
         # Create state manager

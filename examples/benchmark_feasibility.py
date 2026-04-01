@@ -26,10 +26,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from manipulation import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
-from manipulation.planners.grasp_planner import GraspPlanner
-from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
-from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
+from tampanda import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda.planners.grasp_planner import GraspPlanner
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 
 _XML = SCENE_SYMBOLIC
 

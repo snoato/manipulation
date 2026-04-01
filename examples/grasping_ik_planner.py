@@ -11,8 +11,8 @@ GraspPlanner differences:
 from pathlib import Path
 import time
 
-from manipulation import FrankaEnvironment, ControllerStatus, GraspPlanner, SCENE_TEST
-from manipulation.planners.grasp_planner import GraspType
+from tampanda import FrankaEnvironment, ControllerStatus, GraspPlanner, SCENE_TEST
+from tampanda.planners.grasp_planner import GraspType
 
 _XML = SCENE_TEST
 

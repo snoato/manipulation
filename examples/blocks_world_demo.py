@@ -4,8 +4,8 @@ from pathlib import Path
 import time
 import numpy as np
 
-from manipulation import FrankaEnvironment, SCENE_BLOCKS
-from manipulation.symbolic.domains.blocks import BlocksDomain, BlocksStateManager
+from tampanda import FrankaEnvironment, SCENE_BLOCKS
+from tampanda.symbolic.domains.blocks import BlocksDomain, BlocksStateManager
 
 _HERE = Path(__file__).parent
 _XML = SCENE_BLOCKS
