@@ -612,6 +612,22 @@ class FrankaEnvironment(BaseEnvironment):
         mujoco.mj_forward(self.model, self.data)
         return goal_q + e_ss
 
+    @classmethod
+    def from_scene(cls, builder, rate: float = 200.0,
+                   collision_bodies: Optional[List[str]] = None) -> "FrankaEnvironment":
+        """Build and load an environment from a SceneBuilder.
+
+        Convenience wrapper around ``builder.build_env()``.  Keeps
+        FrankaEnvironment as the single entry point for callers that don't
+        want to import from ``manipulation.scenes`` directly.
+
+        Args:
+            builder:          A configured SceneBuilder instance.
+            rate:             Simulation rate in Hz.
+            collision_bodies: Robot body names for collision checking.
+        """
+        return builder.build_env(rate=rate, collision_bodies=collision_bodies)
+
     def close(self):
         """Close the environment and release resources."""
         if self.viewer is not None:

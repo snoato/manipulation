@@ -1,0 +1,18 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- 160cm x 80cm tabletop, 4cm thick; top face at z=0.27 from body origin.
+       Geom is offset within the body to match the symbolic scene layout:
+       body origin at (0, 0.4, 0), surface centre at world (-0.4, 0.6, 0.25). -->
+  <geom name="_surface" type="box" size="0.8 0.4 0.02" pos="-0.4 -0.2 0.25"
+        rgba="0.55 0.55 0.55 1" contype="1" conaffinity="1"/>
+  <!-- legs -->
+  <geom type="box" size="0.015 0.015 0.12" pos=" 0.38  0.18 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.015 0.015 0.12" pos="-1.18  0.18 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.015 0.015 0.12" pos=" 0.38 -0.58 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.015 0.015 0.12" pos="-1.18 -0.58 0.12" rgba="0.3 0.3 0.3 1"/>
+  <!-- picking sites -->
+  <site name="_site_right" pos="-0.20 0 0.25" size="0.005"
+        rgba="1 0 0 1" type="sphere" euler="-1.57 1.57 0"/>
+  <site name="_site_left"  pos=" 0.20 0 0.25" size="0.005"
+        rgba="0 1 0 1" type="sphere" euler="-1.57 -1.57 0"/>
+</body>

@@ -1,0 +1,11 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- tabletop: 80cm x 80cm, 4cm thick; top face at z=0.27 from body origin -->
+  <geom name="_surface" type="box" size="0.4 0.4 0.02" pos="0 0 0.25"
+        rgba="0.55 0.55 0.55 1" contype="1" conaffinity="1"/>
+  <!-- legs: 2.4cm x 2.4cm x 24cm -->
+  <geom type="box" size="0.012 0.012 0.12" pos=" 0.37  0.37 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.012 0.012 0.12" pos="-0.37  0.37 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.012 0.012 0.12" pos=" 0.37 -0.37 0.12" rgba="0.3 0.3 0.3 1"/>
+  <geom type="box" size="0.012 0.012 0.12" pos="-0.37 -0.37 0.12" rgba="0.3 0.3 0.3 1"/>
+</body>

@@ -1,0 +1,12 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- Inflated inertia keeps the tall thin cylinder (r=0.0125, h=0.16) upright;
+       physically correct Izz=3.91e-6 causes immediate tipping on contact. -->
+  <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
+  <!-- solref="0.02 1": stiff contact spring keeps cylinder on surface;
+       softer values (>0.1) cause fall-through for a 50g cylinder on a box geom.
+       condim=4 provides tangential friction to resist sliding. -->
+  <geom name="_geom" type="cylinder" size="0.0125 0.08" rgba="0.8 0.2 0.2 1"
+        solimp="0.9 0.99 0.001" solref="0.02 1"
+        friction="1 0.005 0.0001" condim="4"/>
+</body>

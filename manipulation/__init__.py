@@ -18,6 +18,7 @@ from manipulation.planners.robust_planner import RobustPlanner
 from manipulation.planners.grasp_planner import GraspPlanner, GraspCandidate, GraspType
 from manipulation.planners.pick_place import PickPlaceExecutor
 from manipulation.controllers.position_controller import PositionController, ControllerStatus
+from manipulation.scenes import SceneBuilder, SceneReloader
 
 __version__ = "0.1.0"
 
@@ -39,4 +40,6 @@ __all__ = [
     "PickPlaceExecutor",
     "PositionController",
     "ControllerStatus",
+    "SceneBuilder",
+    "SceneReloader",
 ]

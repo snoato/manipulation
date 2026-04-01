@@ -1,0 +1,7 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- Inflated inertia keeps the tall thin cylinder (r=0.0125, h=0.16) upright. -->
+  <inertial mass="0.05" pos="0 0 0" diaginertia="0.0250 0.0250 0.0125"/>
+  <geom name="_geom" type="cylinder" size="0.0125 0.08" rgba="0.8 0.2 0.2 1"
+        solimp="0.99 0.99 0.01" solref="0.02 1"/>
+</body>

@@ -1,0 +1,7 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- 15cm x 10cm x 5cm large platform: mass=0.750 kg -->
+  <inertial mass="0.750" pos="0 0 0" diaginertia="0.0020 0.0028 0.0025"/>
+  <geom name="_geom" type="box" size="0.075 0.05 0.025" rgba="0.8 0.2 0.2 1"
+        solimp="0.99 0.99 0.01" solref="0.02 1"/>
+</body>
