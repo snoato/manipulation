@@ -1,4 +1,4 @@
-"""Interactive PDDL-driven manipulation demo.
+"""Interactive tabletop manipulation demo.
 
 Loads a PDDL domain + problem file, shows the scene in the MuJoCo viewer,
 and prompts the user to specify actions one at a time.  Each action is first
@@ -11,8 +11,8 @@ corrupts the main simulation state.
 Usage::
 
     cd examples
-    python pddl_interactive.py <domain.pddl> <problem.pddl>
-    python pddl_interactive.py <domain.pddl> <problem.pddl> --plan <plan.pddl.plan>
+    python tabletop_interactive.py <domain.pddl> <problem.pddl>
+    python tabletop_interactive.py <domain.pddl> <problem.pddl> --plan <plan.pddl.plan>
 
 Commands at the interactive prompt::
 
@@ -436,7 +436,7 @@ def _parse_plan_file(path: str) -> list[tuple[str, ...]]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Interactive PDDL-driven manipulation demo")
+        description="Interactive tabletop manipulation demo")
     parser.add_argument("domain",  help="Path to PDDL domain file (not parsed, for reference)")
     parser.add_argument("problem", help="Path to PDDL problem file")
     parser.add_argument("--plan",  help="Path to .pddl.plan file for automatic execution")

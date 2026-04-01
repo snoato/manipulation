@@ -12,12 +12,11 @@ Usage::
 
 import numpy as np
 
-from tampanda import ControllerStatus, FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda import ControllerStatus, RRTStar
 from tampanda.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
-from tampanda.symbolic.domains.tabletop.grid_domain import GridDomain
-from tampanda.symbolic.domains.tabletop.state_manager import StateManager
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 
-_XML            = SCENE_SYMBOLIC
 _GRID_WIDTH     = 0.4
 _GRID_HEIGHT    = 0.3
 _CELL_SIZE      = 0.04
@@ -66,7 +65,7 @@ def _abort_hold(env):
 
 
 def main():
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
 
     planner = RRTStar(env)
     planner.step_size             = 0.2
@@ -78,7 +77,7 @@ def main():
         cell_size=_CELL_SIZE,
         working_area=(_GRID_WIDTH, _GRID_HEIGHT),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=_GRID_OFFSET_X,
         grid_offset_y=_GRID_OFFSET_Y,
     )

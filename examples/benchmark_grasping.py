@@ -16,10 +16,9 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_BLOCKS
+from tampanda import FrankaEnvironment, RRTStar, ControllerStatus
 from tampanda.planners.grasp_planner import GraspPlanner, GraspType
-
-_XML = SCENE_BLOCKS
+from tampanda.symbolic.domains.blocks.env_builder import make_blocks_builder
 
 TABLE_SURFACE_Z: float = 0.27
 
@@ -224,7 +223,7 @@ def run_trial(
 def benchmark(trials_per_block: int = 3, visualize: bool = False, seed: int = 42):
     rng = np.random.default_rng(seed)
 
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_blocks_builder().build_env(rate=200.0)
     _patch_fast_step(env)          # bypass rate.sleep() for headless speed
 
     if visualize:

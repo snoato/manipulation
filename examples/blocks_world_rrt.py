@@ -7,14 +7,12 @@ from pathlib import Path
 import time
 import numpy as np
 
-from tampanda import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_BLOCKS
+from tampanda import RRTStar, GraspPlanner
 from tampanda.planners import PickPlaceExecutor
-from tampanda.planners.grasp_planner import GRASP_CONTACT_OFFSET
 from tampanda.symbolic.domains.blocks import BlocksDomain, BlocksStateManager
+from tampanda.symbolic.domains.blocks.env_builder import make_blocks_builder
 
-_HERE = Path(__file__).parent
-_XML  = SCENE_BLOCKS
-_OUTPUT_DIR = _HERE / "blocks_output"
+_OUTPUT_DIR = Path(__file__).parent / "blocks_output"
 
 
 def main():
@@ -24,7 +22,7 @@ def main():
 
     # ------------------------------------------------------------------ env
     print("\n1. Loading environment...")
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_blocks_builder().build_env(rate=200.0)
 
     # ------------------------------------------------------------------ planner
     print("\n2. Initialising RRT* planner...")
@@ -41,7 +39,7 @@ def main():
         offset_x=0.0,
         offset_y=0.0,
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
     )
     print(f"   Table height: {domain.table_height:.3f} m")
 

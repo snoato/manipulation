@@ -22,14 +22,11 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from tampanda import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda import FrankaEnvironment, RRTStar
 from tampanda.planners.grasp_planner import GraspPlanner
 from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
-
-_XML = SCENE_SYMBOLIC
-
-TABLE_Z: float = 0.27
 
 # ---------------------------------------------------------------------------
 # Parameter grid to sweep
@@ -50,7 +47,7 @@ GT_RRT_MAX_ITERS  = 2000
 # ---------------------------------------------------------------------------
 
 def build_env():
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
 
     planner = RRTStar(env)
     planner.step_size        = 0.2
@@ -61,13 +58,13 @@ def build_env():
         cell_size=0.04,
         working_area=(0.4, 0.3),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=0.05,
         grid_offset_y=0.25,
     )
 
     state_manager = StateManager(grid, env)
-    grasp_planner = GraspPlanner(table_z=TABLE_Z)
+    grasp_planner = GraspPlanner(table_z=grid.table_height)
 
     # Checker owns the fast-step patch — build it once
     checker = ActionFeasibilityChecker(

@@ -25,10 +25,9 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from tampanda import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_TEST
+from tampanda import FrankaEnvironment, RRTStar, GraspPlanner
 from tampanda.planners.grasp_planner import GraspType
-
-_XML = SCENE_TEST
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 
 TABLE_SURFACE_Z: float = 0.27
 LIFT_THRESHOLD:  float = 0.08   # cylinder must rise ≥ 8 cm
@@ -36,7 +35,7 @@ LIFT_THRESHOLD:  float = 0.08   # cylinder must rise ≥ 8 cm
 PLACE_X = (0.20, 0.55)
 PLACE_Y = (0.35, 0.60)
 
-CYLINDER_NAMES = ["cylinder1", "cylinder2", "cylinder3"]
+CYLINDER_NAMES = ["cylinder_0", "cylinder_1", "cylinder_2"]
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +263,7 @@ def run_rrt_trial(
 def benchmark(trials_per_cylinder: int = 3, visualize: bool = False, seed: int = 42):
     rng = np.random.default_rng(seed)
 
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
 
     if visualize:
         env.launch_viewer()

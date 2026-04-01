@@ -26,14 +26,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from tampanda import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda import FrankaEnvironment, RRTStar
 from tampanda.planners.grasp_planner import GraspPlanner
 from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
-
-_XML = SCENE_SYMBOLIC
-
-TABLE_Z: float = 0.27   # matches scene_symbolic.xml table surface height
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +38,7 @@ TABLE_Z: float = 0.27   # matches scene_symbolic.xml table surface height
 # ---------------------------------------------------------------------------
 
 def build_checker(max_iterations: int):
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
 
     planner = RRTStar(env)
     planner.max_iterations   = max_iterations
@@ -53,7 +50,7 @@ def build_checker(max_iterations: int):
         cell_size=0.04,
         working_area=(0.4, 0.3),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         # grid_offset_x=0.05 shifts x from [0.20,0.60] → [0.25,0.65]
         # grid_offset_y=0.25 shifts y from [0.22,0.52] → [0.45,0.75]
         # → FRONT approach y_min ≈ 0.32 at x_min ≈ 0.27, clear of joint limits
@@ -62,7 +59,7 @@ def build_checker(max_iterations: int):
     )
 
     state_manager = StateManager(grid, env)
-    grasp_planner = GraspPlanner(table_z=TABLE_Z)
+    grasp_planner = GraspPlanner(table_z=grid.table_height)
 
     checker = ActionFeasibilityChecker(
         env, planner, state_manager, grasp_planner,

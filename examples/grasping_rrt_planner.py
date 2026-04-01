@@ -1,22 +1,23 @@
 """RRT*-based grasping using GraspPlanner for geometry-aware grasp candidates.
 
-Compare with grasping_rrt.py which uses hardcoded EE offset poses.
-GraspPlanner differences:
+GraspPlanner features:
   - Reads object geometry (half-extents) to compute valid grasp widths
   - Generates and ranks multiple candidates (top-down X/Y, front approach)
   - Accounts for table clearance and gripper opening limits
   - Aligns finger axis with block orientation to minimise required opening
 """
 
-from pathlib import Path
 import time
 
-from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, GraspPlanner, SCENE_TEST
+import numpy as np
+
+from tampanda import RRTStar, ControllerStatus, GraspPlanner
 from tampanda.planners.grasp_planner import GraspType
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 
-_XML = SCENE_TEST
-
-_TABLE_Z = 0.27
+_HOME_QPOS = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04])
+_HOME_CTRL = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
 
 
 def _pick_candidate(candidates):
@@ -33,14 +34,24 @@ def _pick_candidate(candidates):
 
 
 def main():
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
 
     planner = RRTStar(env)
     planner.max_iterations   = 1000
     planner.step_size        = 0.2
     planner.goal_sample_rate = 0.2
 
-    grasp_planner = GraspPlanner(table_z=_TABLE_Z)
+    grid = GridDomain(
+        model=env.model,
+        cell_size=0.04,
+        working_area=(0.4, 0.3),
+        table_body_name="simple_table",
+        table_geom_name="simple_table_surface",
+        grid_offset_x=0.05,
+        grid_offset_y=0.25,
+    )
+    state_manager = StateManager(grid, env)
+    grasp_planner = GraspPlanner(table_z=grid.table_height)
 
     with env.launch_viewer() as viewer:
         targets   = []
@@ -49,9 +60,13 @@ def main():
 
         while viewer.is_running():
             if target is None and len(targets) == 0:
-                targets = ["cylinder1", "cylinder2", "cylinder3"]
-                env.reset()
+                state_manager.sample_random_state(n_cylinders=3)
+                env.data.qpos[:8] = _HOME_QPOS
+                env.data.ctrl[:8] = _HOME_CTRL
+                env.reset_velocities()
+                env.forward()
                 env.rest(2.0)
+                targets = sorted(state_manager.ground_state()["cylinders"].keys())
 
             dt = env.step()
 
