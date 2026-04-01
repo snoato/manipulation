@@ -20,7 +20,7 @@ from tampanda.planners.grasp_planner import GraspPlanner, GraspCandidate, GraspT
 from tampanda.planners.pick_place import PickPlaceExecutor
 from tampanda.controllers.position_controller import PositionController, ControllerStatus
 from tampanda.scenes import SceneBuilder, SceneReloader
-from tampanda.sensing import RobotSensors
+from tampanda.sensing import RobotSensors, Lidar
 
 __version__ = "1.0.0"
 
@@ -45,4 +45,5 @@ __all__ = [
     "SceneBuilder",
     "SceneReloader",
     "RobotSensors",
+    "Lidar",
 ]
