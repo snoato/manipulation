@@ -93,14 +93,14 @@ class _Completer:
 
         return candidates[idx] if idx < len(candidates) else None
 
-from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC, ControllerStatus
+from manipulation import RRTStar, FeasibilityRRT, ControllerStatus
 from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
 from manipulation.planners.robust_planner import RobustPlanner
 from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
+from manipulation.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 
 # ── Scene configuration ────────────────────────────────────────────────────
-_XML           = SCENE_SYMBOLIC
 _GRID_WIDTH    = 0.4
 _GRID_HEIGHT   = 0.3
 _CELL_SIZE     = 0.04
@@ -192,13 +192,13 @@ def _extract_init_section(pddl_text):
 
 
 def _make_env_and_grid():
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
     grid = GridDomain(
         model=env.model,
         cell_size=_CELL_SIZE,
         working_area=(_GRID_WIDTH, _GRID_HEIGHT),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=_GRID_OFFSET_X,
         grid_offset_y=_GRID_OFFSET_Y,
     )

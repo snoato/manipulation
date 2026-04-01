@@ -37,15 +37,15 @@ try:
 except ImportError:
     wandb = None
 
-from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC
+from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT
 from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
+from manipulation.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
 from manipulation.symbolic.domains.tabletop.state_manager import StateManager
 from manipulation.symbolic.domains.tabletop.visualization import visualize_grid_state
 
 _HERE         = Path(__file__).parent
-_XML          = SCENE_SYMBOLIC
 _DOMAIN       = (_HERE / "pddl" / "domain.pddl").resolve()
 _DOMAIN_NO_DROP = (_HERE / "pddl" / "spatial_put" / "domain.pddl").resolve()
 
@@ -149,7 +149,7 @@ def _build_env(args) -> tuple:
 
         reachable_cells: frozenset[str] of cell IDs where IK converges.
     """
-    env = FrankaEnvironment(_XML.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
     _patch_fast_step(env)
 
     env.ik.max_iters     = args.ik_iters
@@ -168,7 +168,7 @@ def _build_env(args) -> tuple:
         cell_size=args.cell_size,
         working_area=(args.grid_width, args.grid_height),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=args.grid_offset_x,
         grid_offset_y=args.grid_offset_y,
     )

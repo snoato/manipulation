@@ -37,10 +37,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from manipulation import FrankaEnvironment, RRTStar, FeasibilityRRT, SCENE_SYMBOLIC, ControllerStatus
+from manipulation import RRTStar, FeasibilityRRT, ControllerStatus
 from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
 from manipulation.planners.robust_planner import RobustPlanner
 from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
+from manipulation.symbolic.domains.tabletop.env_builder import make_symbolic_builder
 
 # ── Scene / planner constants (match pddl_interactive.py) ─────────────────
 _GRID_WIDTH    = 0.4
@@ -64,13 +65,13 @@ _HOME_Q7   = _HOME_QPOS[:7]  # 7-DOF for planning
 
 def _make_headless_env():
     """Create a FrankaEnvironment with the rate limiter bypassed."""
-    env = FrankaEnvironment(SCENE_SYMBOLIC.as_posix(), rate=200.0)
+    env = make_symbolic_builder().build_env(rate=200.0)
     grid = GridDomain(
         model=env.model,
         cell_size=_CELL_SIZE,
         working_area=(_GRID_WIDTH, _GRID_HEIGHT),
         table_body_name="simple_table",
-        table_geom_name="table_surface",
+        table_geom_name="simple_table_surface",
         grid_offset_x=_GRID_OFFSET_X,
         grid_offset_y=_GRID_OFFSET_Y,
     )
