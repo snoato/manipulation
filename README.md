@@ -14,7 +14,7 @@ Just another wrapper for robotics manipulation built on top of [MuJoCo](https://
 - **Symbolic Planning**: Grid-based and blocks-world PDDL domains; `ActionFeasibilityChecker` for validating pick/drop with IK + RRT*
 - **Dataset Generation**: Multiprocessing-capable data generation with BFS planning, feasibility validation, and optional W&B logging
 - **Camera Support**: RGB, depth, segmentation, and pointcloud rendering via `MujocoCamera`
-- **Bundled Scene Constants**: All scene XMLs accessible as `SCENE_SYMBOLIC`, `SCENE_BLOCKS`, etc. — no fragile path wrangling
+- **Programmatic Scene Builder**: `SceneBuilder` assembles MJCF scenes from reusable object templates at runtime — no static XML editing. Supports per-instance position, rotation, and colour overrides; hot-reload with physics state preservation; designed for future URL/Menagerie asset sources.
 
 ## Installation
 
@@ -27,57 +27,53 @@ Dependencies: `mujoco>=3.0.0`, `mink>=0.0.1`, `numpy`, `loop-rate-limiters`, `ma
 
 ## Quick Start
 
-### Motion planning
+### Build a scene programmatically
 
 ```python
-import numpy as np
-from manipulation import FrankaEnvironment, RRTStar, SCENE_DEFAULT
+from manipulation import SceneBuilder
+from manipulation.scenes import CYLINDER_THIN_TEMPLATE, TABLE_SYMBOLIC_TEMPLATE
 
-env = FrankaEnvironment(str(SCENE_DEFAULT), rate=200.0)
-planner = RRTStar(env)
-
-path = planner.plan(start_config, goal_config)
-if path is not None:
-    with env.launch_viewer() as viewer:
-        env.execute_path(path, planner)
-        env.wait_idle()
-        env.rest(2.0)
+builder = SceneBuilder()
+builder.add_resource("table",    TABLE_SYMBOLIC_TEMPLATE)
+builder.add_resource("cylinder", CYLINDER_THIN_TEMPLATE)
+builder.add_object("table",    pos=[0.45, 0.0, 0.0])
+builder.add_object("cylinder", pos=[0.45, 0.0, 0.36], rgba=[1.0, 0.2, 0.2, 1.0])
+env = builder.build_env(rate=200.0)
 ```
 
-### Pick and place
+### Pick and place (blocks domain)
 
 ```python
-from manipulation import FrankaEnvironment, RRTStar, GraspPlanner, PickPlaceExecutor, SCENE_BLOCKS
+from manipulation import RRTStar, GraspPlanner, PickPlaceExecutor
+from manipulation.symbolic.domains.blocks import make_blocks_builder
 
-env      = FrankaEnvironment(str(SCENE_BLOCKS), rate=200.0)
+env      = make_blocks_builder().build_env(rate=200.0)
 planner  = RRTStar(env)
-executor = PickPlaceExecutor(env, planner, GraspPlanner(table_z=env.table_height))
+executor = PickPlaceExecutor(env, planner, GraspPlanner(table_z=0.27))
 
-block_pos  = env.get_object_position("block_0")
-half_size  = env.get_object_half_size("block_0")
-block_quat = env.get_object_orientation("block_0")
-
-executor.pick("block_0", block_pos, half_size, block_quat)
-executor.place("block_0", place_center, ee_quat=np.array([0, 1, 0, 0]))
+executor.pick("block_0", env.get_object_position("block_0"),
+              env.get_object_half_size("block_0"),
+              env.get_object_orientation("block_0"))
+executor.place("block_0", place_center)
 ```
 
-### Feasibility checking (headless)
+### Tabletop PDDL feasibility checking (headless)
 
 ```python
-from manipulation import FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from manipulation import RRTStar
 from manipulation.symbolic import GridDomain, StateManager
+from manipulation.symbolic.domains.tabletop import make_symbolic_builder
 from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 from manipulation.planners.grasp_planner import GraspPlanner
 
-env     = FrankaEnvironment(str(SCENE_SYMBOLIC), rate=200.0)
+env     = make_symbolic_builder().build_env(rate=200.0)
 planner = RRTStar(env)
 grid    = GridDomain(env.model, cell_size=0.04, working_area=(0.4, 0.3),
+                     table_geom_name="simple_table_surface",
                      grid_offset_x=0.05, grid_offset_y=0.25)
-state_manager = StateManager(grid, env)
-checker = ActionFeasibilityChecker(env, planner, state_manager,
+checker = ActionFeasibilityChecker(env, planner, StateManager(grid, env),
                                    GraspPlanner(table_z=grid.table_height))
-
-feasible, reason = checker.check("pick", state, cylinder_name="cyl_0")
+feasible, _ = checker.check("pick", state, cylinder_name="cylinder_0")
 ```
 
 ## Examples
@@ -101,11 +97,13 @@ python grasping_rrt_planner.py
 # Blocks world
 python blocks_world_rrt.py    # Pick two cubes onto a platform using PickPlaceExecutor
 python blocks_world_demo.py   # Symbolic state grounding + PDDL generation
+mjpython blocks_scene.py      # Blocks domain visual verification (SceneBuilder)
 
 # Symbolic / tabletop
-python symbolic.py               # Grid-based PDDL planning
-python symbolic_grasping_rrt.py  # Symbolic plan executed with RRT*
-python demo_solve.py             # Headless BFS planning → full physical execution in viewer
+mjpython symbolic.py               # Grid-based PDDL planning
+python symbolic_grasping_rrt.py    # Symbolic plan executed with RRT*
+python demo_solve.py               # Headless BFS planning → full physical execution in viewer
+mjpython scene_builder.py          # Programmatic scene construction + hot-reload demo
 
 # Benchmarks (all headless, fast)
 python benchmark_grasping.py              # GraspPlanner + RRT* on blocks
@@ -146,14 +144,15 @@ For cluster runs, see `slurm/generate_data.sbatch`.
 manipulation/
 ├── core/               # Abstract base classes
 ├── environments/
-│   └── assets/         # Bundled scene XMLs + SCENE_* constants
+│   └── assets/         # Bundled scene XMLs (legacy; prefer domain builders)
 ├── ik/                 # MinkIK
 ├── planners/           # RRTStar, GraspPlanner, PickPlaceExecutor
 ├── controllers/        # PositionController
 ├── perception/         # MujocoCamera (RGB, depth, seg, pointcloud)
+├── scenes/             # SceneBuilder, AssetRegistry, SceneReloader, object templates
 ├── symbolic/
 │   └── domains/
-│       ├── tabletop/   # GridDomain, StateManager, feasibility, generate_data
-│       └── blocks/     # BlocksDomain, BlocksStateManager
+│       ├── tabletop/   # GridDomain, StateManager, feasibility, generate_data, env_builder
+│       └── blocks/     # BlocksDomain, BlocksStateManager, env_builder
 └── utils/
 ```

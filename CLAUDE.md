@@ -20,7 +20,9 @@ python basic_ik.py           # Basic IK control
 python basic_rrt.py          # RRT* motion planning
 python grasping_ik.py        # Pick-and-place with IK
 python grasping_rrt.py       # Pick-and-place with RRT*
-python symbolic.py           # Grid-based PDDL planning
+mjpython symbolic.py         # Grid-based PDDL planning (tabletop domain)
+mjpython blocks_scene.py     # Blocks domain visual verification
+mjpython scene_builder.py    # Programmatic scene construction + hot-reload demo
 python -m manipulation.symbolic.domains.tabletop.generate_data  # Tabletop data generation (supports multiprocessing)
 ```
 
@@ -30,7 +32,9 @@ This is a robotics manipulation library wrapping MuJoCo and MINK for the Franka 
 
 ### Core Components
 
-**`FrankaEnvironment`** (`environments/franka_env.py`) — The main entry point. Wraps MuJoCo simulation, manages collision detection, and provides access to IK and controller. Scene XML files live in `environments/assets/franka_emika_panda/`.
+**`SceneBuilder`** (`scenes/builder.py`) — Assembles MJCF scenes from named object templates (`scenes/templates/objects/`). Call `builder.build_env()` instead of `FrankaEnvironment(xml_path)` for any domain that has an `env_builder.py`. Each symbolic domain exports a factory: `make_symbolic_builder()` (tabletop) and `make_blocks_builder()` (blocks).
+
+**`FrankaEnvironment`** (`environments/franka_env.py`) — The main entry point. Wraps MuJoCo simulation, manages collision detection, and provides access to IK and controller. Instantiate via a domain builder rather than a raw XML path.
 
 **`RRTStar`** (`planners/rrt_star.py`) — RRT* motion planner. Plans collision-free paths in joint configuration space. Includes path smoothing. Key params: `max_iterations`, `step_size`, `search_radius`, `goal_threshold`.
 
