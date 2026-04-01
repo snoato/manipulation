@@ -5,8 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from manipulation import FrankaEnvironment, SCENE_SYMBOLIC
-from manipulation.perception import MujocoCamera
+from tampanda import FrankaEnvironment, SCENE_SYMBOLIC
+from tampanda.perception import MujocoCamera
 
 _XML = SCENE_SYMBOLIC
 

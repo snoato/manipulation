@@ -25,8 +25,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_TEST
-from manipulation.planners.grasp_planner import GraspType
+from tampanda import FrankaEnvironment, RRTStar, GraspPlanner, SCENE_TEST
+from tampanda.planners.grasp_planner import GraspType
 
 _XML = SCENE_TEST
 

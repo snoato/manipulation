@@ -4,8 +4,8 @@ from pathlib import Path
 import time
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_SYMBOLIC
-from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
+from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_SYMBOLIC
+from tampanda.symbolic import GridDomain, StateManager, visualize_grid_state
 
 _HERE = Path(__file__).parent
 _XML = SCENE_SYMBOLIC

@@ -13,7 +13,7 @@ Run with::
 import mujoco
 import mujoco.viewer
 
-from manipulation.symbolic.domains.blocks import (
+from tampanda.symbolic.domains.blocks import (
     BlocksDomain,
     BlocksStateManager,
     make_blocks_builder,

@@ -9,8 +9,8 @@ import time
 import mujoco
 import mujoco.viewer
 
-from manipulation import FrankaEnvironment, SceneBuilder, SceneReloader
-from manipulation.scenes import CYLINDER_TEMPLATE, TABLE_TEMPLATE
+from tampanda import FrankaEnvironment, SceneBuilder, SceneReloader
+from tampanda.scenes import CYLINDER_TEMPLATE, TABLE_TEMPLATE
 
 
 def make_builder(n_cylinders: int) -> SceneBuilder:

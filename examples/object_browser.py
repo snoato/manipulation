@@ -104,8 +104,8 @@ def _interactive_pick(downloader, source_label: str) -> list:
 # ---------------------------------------------------------------------------
 
 def _build_scene(ycb_names, gso_names):
-    from manipulation.scenes import SceneBuilder
-    from manipulation.scenes import TABLE_SYMBOLIC_TEMPLATE
+    from tampanda.scenes import SceneBuilder
+    from tampanda.scenes import TABLE_SYMBOLIC_TEMPLATE
 
     builder = SceneBuilder()
     builder.add_resource("table", TABLE_SYMBOLIC_TEMPLATE)
@@ -162,7 +162,7 @@ def main():
                         help="Print all available GSO objects and exit")
     args = parser.parse_args()
 
-    from manipulation.scenes.assets import YCBDownloader, GSODownloader
+    from tampanda.scenes.assets import YCBDownloader, GSODownloader
 
     ycb_dl = YCBDownloader()
     gso_dl = GSODownloader()

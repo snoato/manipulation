@@ -5,9 +5,9 @@ import time
 import re
 import matplotlib.pyplot as plt
 
-from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
-from manipulation.symbolic.domains.tabletop.env_builder import make_symbolic_builder
-from manipulation.symbolic.domains.tabletop.state_manager import extract_grid_dimensions_from_pddl
+from tampanda.symbolic import GridDomain, StateManager, visualize_grid_state
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
+from tampanda.symbolic.domains.tabletop.state_manager import extract_grid_dimensions_from_pddl
 
 _HERE = Path(__file__).parent
 _DOMAIN_DIR = _HERE / ".." / "manipulation" / "symbolic" / "domains" / "tabletop" / "pddl"

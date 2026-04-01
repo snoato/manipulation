@@ -16,8 +16,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from manipulation import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_BLOCKS
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType
+from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_BLOCKS
+from tampanda.planners.grasp_planner import GraspPlanner, GraspType
 
 _XML = SCENE_BLOCKS
 

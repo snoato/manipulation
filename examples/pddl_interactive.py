@@ -93,12 +93,12 @@ class _Completer:
 
         return candidates[idx] if idx < len(candidates) else None
 
-from manipulation import RRTStar, FeasibilityRRT, ControllerStatus
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
-from manipulation.planners.robust_planner import RobustPlanner
-from manipulation.symbolic.domains.tabletop import GridDomain, StateManager
-from manipulation.symbolic.domains.tabletop.env_builder import make_symbolic_builder
-from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
+from tampanda import RRTStar, FeasibilityRRT, ControllerStatus
+from tampanda.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
+from tampanda.planners.robust_planner import RobustPlanner
+from tampanda.symbolic.domains.tabletop import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop.env_builder import make_symbolic_builder
+from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
 
 # ── Scene configuration ────────────────────────────────────────────────────
 _GRID_WIDTH    = 0.4

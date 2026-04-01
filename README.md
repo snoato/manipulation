@@ -1,6 +1,10 @@
-# Manipulation
+![TAMPanda](assets/TAMPanda_banner.svg)
 
-Just another wrapper for robotics manipulation built on top of [MuJoCo](https://github.com/google-deepmind/mujoco) and [MINK](https://github.com/kevinzakka/mink), featuring several grasping and manipulation scenarios. Supports motion planning via RRT*, symbolic task planning via PDDL, and dataset generation for learning-based methods.
+[![License](https://img.shields.io/badge/license-MIT-bf5fcf?style=flat-square&labelColor=0d0d12)](LICENSE)
+[![Python](https://img.shields.io/badge/python-%E2%89%A53.10-bf5fcf?style=flat-square&labelColor=0d0d12)](pyproject.toml)
+[![MuJoCo](https://img.shields.io/badge/mujoco-3.x-7eecdf?style=flat-square&labelColor=0d0d12)](https://mujoco.org)
+
+**TAMPanda** is a task and motion planning library for the Franka Emika Panda robot, built on [MuJoCo](https://github.com/google-deepmind/mujoco) and [MINK](https://github.com/kevinzakka/mink). It combines continuous motion planning (RRT*, IK) with discrete symbolic planning (PDDL) and supports dataset generation for learning-based methods.
 
 ## Features
 
@@ -15,12 +19,11 @@ Just another wrapper for robotics manipulation built on top of [MuJoCo](https://
 - **Dataset Generation**: Multiprocessing-capable data generation with BFS planning, feasibility validation, and optional W&B logging
 - **Camera Support**: RGB, depth, segmentation, and pointcloud rendering via `MujocoCamera`
 - **Programmatic Scene Builder**: `SceneBuilder` assembles MJCF scenes from reusable object templates at runtime — no static XML editing. Supports per-instance position, rotation, and colour overrides; hot-reload with physics state preservation.
-- **Remote Asset Library**: `YCBDownloader` and `GSODownloader` fetch YCB objects (`elpis-lab/ycb_dataset`) and Google Scanned Objects (`kevinzakka/mujoco_scanned_objects`) from GitHub on demand, caching them under `~/.cache/manipulation/assets/`. Full-MJCF assets (meshes, materials) are namespace-merged into scenes automatically.
+- **Remote Asset Library**: `YCBDownloader` and `GSODownloader` fetch YCB objects (`elpis-lab/ycb_dataset`) and Google Scanned Objects (`kevinzakka/mujoco_scanned_objects`) from GitHub on demand, caching them under `~/.cache/tampanda/assets/`. Full-MJCF assets (meshes, materials) are namespace-merged into scenes automatically.
 
 ## Installation
 
 ```bash
-cd manipulation
 pip install -e .
 ```
 
@@ -31,8 +34,8 @@ Dependencies: `mujoco>=3.0.0`, `mink>=0.0.1`, `numpy`, `loop-rate-limiters`, `ma
 ### Build a scene programmatically
 
 ```python
-from manipulation import SceneBuilder
-from manipulation.scenes import CYLINDER_THIN_TEMPLATE, TABLE_SYMBOLIC_TEMPLATE
+from tampanda import SceneBuilder
+from tampanda.scenes import CYLINDER_THIN_TEMPLATE, TABLE_SYMBOLIC_TEMPLATE
 
 builder = SceneBuilder()
 builder.add_resource("table",    TABLE_SYMBOLIC_TEMPLATE)
@@ -45,8 +48,8 @@ env = builder.build_env(rate=200.0)
 ### Pick and place (blocks domain)
 
 ```python
-from manipulation import RRTStar, GraspPlanner, PickPlaceExecutor
-from manipulation.symbolic.domains.blocks import make_blocks_builder
+from tampanda import RRTStar, GraspPlanner, PickPlaceExecutor
+from tampanda.symbolic.domains.blocks import make_blocks_builder
 
 env      = make_blocks_builder().build_env(rate=200.0)
 planner  = RRTStar(env)
@@ -61,11 +64,11 @@ executor.place("block_0", place_center)
 ### Tabletop PDDL feasibility checking (headless)
 
 ```python
-from manipulation import RRTStar
-from manipulation.symbolic import GridDomain, StateManager
-from manipulation.symbolic.domains.tabletop import make_symbolic_builder
-from manipulation.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
-from manipulation.planners.grasp_planner import GraspPlanner
+from tampanda import RRTStar
+from tampanda.symbolic import GridDomain, StateManager
+from tampanda.symbolic.domains.tabletop import make_symbolic_builder
+from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
+from tampanda.planners.grasp_planner import GraspPlanner
 
 env     = make_symbolic_builder().build_env(rate=200.0)
 planner = RRTStar(env)
@@ -86,11 +89,11 @@ The library can download objects from two external repositories and cache them l
 | YCB | `elpis-lab/ycb_dataset` | ~80 YCB household objects (MJCF) |
 | GSO | `kevinzakka/mujoco_scanned_objects` | ~1 030 Google Scanned Objects (CoACD hulls) |
 
-Objects are cached under `~/.cache/manipulation/assets/` (override with `MANIPULATION_ASSETS_CACHE`).
+Objects are cached under `~/.cache/tampanda/assets/` (override with `TAMPANDA_ASSETS_CACHE`).
 Set `GITHUB_TOKEN` in your environment to raise the GitHub API rate limit from 60 to 5 000 requests/hour.
 
 ```python
-from manipulation.scenes import SceneBuilder, YCBDownloader, GSODownloader
+from tampanda.scenes import SceneBuilder, YCBDownloader, GSODownloader
 
 # Programmatic download + placement
 builder = SceneBuilder()
@@ -159,7 +162,7 @@ python benchmark_feasibility_params.py    # RRT/IK parameter sweep (finds fastes
 Generate PDDL problems with motion-planning-validated feasibility labels:
 
 ```bash
-python -m manipulation.symbolic.domains.tabletop.generate_data \
+python -m tampanda.symbolic.domains.tabletop.generate_data \
     --num-train 200 --num-val 20 --num-test 20 \
     --output-dir data/tabletop \
     --num-workers 0          # 0 = all available CPUs
@@ -183,7 +186,7 @@ For cluster runs, see `slurm/generate_data.sbatch`.
 ## Package Structure
 
 ```
-manipulation/
+tampanda/
 ├── core/               # Abstract base classes
 ├── environments/
 │   └── assets/         # Bundled scene XMLs (legacy; prefer domain builders)
@@ -198,4 +201,6 @@ manipulation/
 │       ├── tabletop/   # GridDomain, StateManager, feasibility, generate_data, env_builder
 │       └── blocks/     # BlocksDomain, BlocksStateManager, env_builder
 └── utils/
+
+manipulation/           # Backwards-compatibility shim (re-exports tampanda, will be removed)
 ```

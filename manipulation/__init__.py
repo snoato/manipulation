@@ -1,45 +1,25 @@
-"""
-Manipulation - A robotics manipulation package built on MuJoCo and MINK.
+"""Backwards-compatibility shim for the old `manipulation` package name.
+
+The package has been renamed to `tampanda`. This shim re-exports everything
+so that existing code continues to work, but will emit a DeprecationWarning
+to encourage migration.
+
+    # Old (still works, shows warning):
+    from manipulation import RRTStar
+
+    # New:
+    from tampanda import RRTStar
 """
 
-from manipulation.environments.franka_env import FrankaEnvironment
-from manipulation.environments.assets import (
-    SCENE_DEFAULT,
-    SCENE_SYMBOLIC,
-    SCENE_BLOCKS,
-    SCENE_MAMO,
-    SCENE_TEST,
-    SCENE_MJX,
+import warnings
+
+warnings.warn(
+    "The 'manipulation' package has been renamed to 'tampanda'. "
+    "Please update your imports: `from manipulation import X` → `from tampanda import X`. "
+    "This compatibility shim will be removed in a future release.",
+    DeprecationWarning,
+    stacklevel=2,
 )
-from manipulation.ik.mink_ik import MinkIK
-from manipulation.planners.rrt_star import RRTStar
-from manipulation.planners.feasibility_rrt import FeasibilityRRT
-from manipulation.planners.robust_planner import RobustPlanner
-from manipulation.planners.grasp_planner import GraspPlanner, GraspCandidate, GraspType
-from manipulation.planners.pick_place import PickPlaceExecutor
-from manipulation.controllers.position_controller import PositionController, ControllerStatus
-from manipulation.scenes import SceneBuilder, SceneReloader
 
-__version__ = "0.1.0"
-
-__all__ = [
-    "FrankaEnvironment",
-    "SCENE_DEFAULT",
-    "SCENE_SYMBOLIC",
-    "SCENE_BLOCKS",
-    "SCENE_MAMO",
-    "SCENE_TEST",
-    "SCENE_MJX",
-    "MinkIK",
-    "RRTStar",
-    "FeasibilityRRT",
-    "RobustPlanner",
-    "GraspPlanner",
-    "GraspCandidate",
-    "GraspType",
-    "PickPlaceExecutor",
-    "PositionController",
-    "ControllerStatus",
-    "SceneBuilder",
-    "SceneReloader",
-]
+from tampanda import *  # noqa: F401, F403, E402
+from tampanda import __version__, __all__  # noqa: F401, E402

@@ -18,7 +18,7 @@ sys.path.insert(0, ".")
 import numpy as np
 import mujoco
 
-from manipulation import FrankaEnvironment, SCENE_SYMBOLIC
+from tampanda import FrankaEnvironment, SCENE_SYMBOLIC
 
 _HOME_QPOS = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04, 0.04])
 
@@ -115,7 +115,7 @@ def main():
 
     print("\n=== Fix 2: smooth_path proportional steps ===")
 
-    from manipulation.planners.rrt_star import RRTStar
+    from tampanda.planners.rrt_star import RRTStar
     planner = RRTStar(env)
     planner.step_size = 0.2
     planner.collision_check_steps = 20

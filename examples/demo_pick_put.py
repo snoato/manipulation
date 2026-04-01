@@ -12,10 +12,10 @@ Usage::
 
 import numpy as np
 
-from manipulation import ControllerStatus, FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
-from manipulation.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
-from manipulation.symbolic.domains.tabletop.grid_domain import GridDomain
-from manipulation.symbolic.domains.tabletop.state_manager import StateManager
+from tampanda import ControllerStatus, FrankaEnvironment, RRTStar, SCENE_SYMBOLIC
+from tampanda.planners.grasp_planner import GraspPlanner, GraspType, quat_to_rotmat
+from tampanda.symbolic.domains.tabletop.grid_domain import GridDomain
+from tampanda.symbolic.domains.tabletop.state_manager import StateManager
 
 _XML            = SCENE_SYMBOLIC
 _GRID_WIDTH     = 0.4

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from manipulation import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_TEST
-from manipulation.perception import MujocoCamera
+from tampanda import FrankaEnvironment, RRTStar, ControllerStatus, SCENE_TEST
+from tampanda.perception import MujocoCamera
 
 _HERE = Path(__file__).parent
 _XML = SCENE_TEST

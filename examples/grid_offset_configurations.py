@@ -6,8 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-from manipulation import FrankaEnvironment, SCENE_SYMBOLIC
-from manipulation.symbolic import GridDomain, StateManager, visualize_grid_state
+from tampanda import FrankaEnvironment, SCENE_SYMBOLIC
+from tampanda.symbolic import GridDomain, StateManager, visualize_grid_state
 
 _HERE = Path(__file__).parent
 _XML = SCENE_SYMBOLIC
