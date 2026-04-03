@@ -96,8 +96,8 @@ class GraspPlanner:
             path = rrt.plan_to_pose(c.approach_pos, c.grasp_quat, ...)
     """
 
-    # Maximum gripper opening with a 5 % safety margin (Franka max = 0.08 m).
-    MAX_GRIPPER_WIDTH: float = 0.076
+    # Maximum gripper opening — true Franka hardware limit.
+    MAX_GRIPPER_WIDTH: float = 0.08
 
     def __init__(
         self,
