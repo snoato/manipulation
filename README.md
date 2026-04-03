@@ -4,24 +4,21 @@
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.10-bf5fcf?style=flat-square&labelColor=0d0d12)](pyproject.toml)
 [![MuJoCo](https://img.shields.io/badge/mujoco-3.x-7eecdf?style=flat-square&labelColor=0d0d12)](https://mujoco.org)
 
-**TAMPanda** is a task and motion planning library for the Franka Emika Panda robot, built on [MuJoCo](https://github.com/google-deepmind/mujoco) and [MINK](https://github.com/kevinzakka/mink). It combines continuous motion planning (RRT*, IK) with discrete symbolic planning (PDDL) and supports dataset generation for learning-based methods.
+**TAMPanda** is a MuJoCo-based task and motion planning library developed at the Chair of Machine Learning and Reasoning (i6) at RWTH Aachen University. It combines IK, RRT\* motion planning, and PDDL symbolic planning — primarily for the Franka Emika Panda — along with A\* navigation for mobile robots, a programmatic scene builder, and remote asset support. In other words, just another MuJoCo wrapper.
 
 ## Features
 
-- **Environment Simulation**: MuJoCo-based robot environments with collision detection
-- **Inverse Kinematics**: Fast IK solving using MINK
-- **Motion Planning**: RRT* with path smoothing
-- **Robot Control**: Position-based controller with gravity-compensated trajectory following
-- **Grasp Planning**: Geometry-aware `GraspPlanner` with ranked candidates (top-down, front approach), table-clearance and gripper-width checks
-- **Pick and Place**: Reusable `PickPlaceExecutor` with multi-candidate retry and kinematic object attachment
-- **Franka Panda Support**: Pre-configured support for Franka Emika Panda robot
-- **Symbolic Planning**: Grid-based and blocks-world PDDL domains; `ActionFeasibilityChecker` for validating pick/drop with IK + RRT*
-- **Dataset Generation**: Multiprocessing-capable data generation with BFS planning, feasibility validation, and optional W&B logging
-- **Camera Support**: RGB, depth, segmentation, and pointcloud rendering via `MujocoCamera`
-- **Programmatic Scene Builder**: `SceneBuilder` assembles MJCF scenes from reusable object templates at runtime — no static XML editing. Supports per-instance position, rotation, and colour overrides; hot-reload with physics state preservation.
-- **Remote Asset Library**: `YCBDownloader` and `GSODownloader` fetch YCB objects (`elpis-lab/ycb_dataset`) and Google Scanned Objects (`kevinzakka/mujoco_scanned_objects`) from GitHub on demand, caching them under `~/.cache/tampanda/assets/`. Full-MJCF assets (meshes, materials) are namespace-merged into scenes automatically.
+**Simulation & Control** — MuJoCo environments for the Franka Panda and a differential-drive mobile robot; collision detection, gravity compensation, position-based trajectory controller
 
-## Installation
+**Planning** — IK via [MINK](https://github.com/kevinzakka/mink); RRT\* with path smoothing; geometry-aware grasp candidate ranking; A\* navigation with occupancy-grid obstacle inflation
+
+**Manipulation** — `PickPlaceExecutor` for end-to-end pick-and-place with multi-candidate retry and kinematic object attachment
+
+**Symbolic Planning** — grid-based tabletop and blocks-world PDDL domains; `ActionFeasibilityChecker` validates symbolic actions against the continuous planner; parallel dataset generation with BFS and optional W&B logging
+
+**Scene & Assets** — `SceneBuilder` assembles scenes from reusable MJCF templates at runtime with hot-reload; `YCBDownloader` / `GSODownloader` fetch ~80 YCB objects and ~1 030 Google Scanned Objects on demand; `MujocoCamera` for RGB, depth, segmentation, and pointcloud rendering
+
+## Setup
 
 ```bash
 pip install -e .
@@ -29,178 +26,106 @@ pip install -e .
 
 Dependencies: `mujoco>=3.0.0`, `mink>=0.0.1`, `numpy`, `loop-rate-limiters`, `matplotlib`, `opencv-python`
 
+> **macOS:** The MuJoCo passive viewer requires `mjpython` instead of `python`. Headless scripts run fine with standard `python`.
+
 ## Quick Start
 
-### Build a scene programmatically
+### Build a scene
 
 ```python
-from tampanda import SceneBuilder
-from tampanda.scenes import CYLINDER_THIN_TEMPLATE, TABLE_SYMBOLIC_TEMPLATE
+from tampanda import ArmSceneBuilder
+from tampanda.scenes import TABLE_SYMBOLIC_TEMPLATE, CYLINDER_THIN_TEMPLATE
 
-builder = SceneBuilder()
+builder = ArmSceneBuilder()
 builder.add_resource("table",    TABLE_SYMBOLIC_TEMPLATE)
 builder.add_resource("cylinder", CYLINDER_THIN_TEMPLATE)
-builder.add_object("table",    pos=[0.45, 0.0, 0.0])
-builder.add_object("cylinder", pos=[0.45, 0.0, 0.36], rgba=[1.0, 0.2, 0.2, 1.0])
+builder.add_resource("can",      {"type": "ycb", "name": "master_chef_can"})
+builder.add_object("table",    pos=[0.45,  0.00, 0.00])
+builder.add_object("cylinder", pos=[0.40,  0.10, 0.36], rgba=[0.8, 0.3, 0.2, 1.0])
+builder.add_object("can",      pos=[0.50, -0.10, 0.33])
+
 env = builder.build_env(rate=200.0)
+with env.launch_viewer() as viewer:
+    while viewer.is_running():
+        env.step()
 ```
 
-### Pick and place (blocks domain)
+### Pick and place
 
 ```python
-from tampanda import RRTStar, GraspPlanner, PickPlaceExecutor
-from tampanda.symbolic.domains.blocks import make_blocks_builder
+from tampanda import ArmSceneBuilder, RRTStar, GraspPlanner, PickPlaceExecutor
+from tampanda.scenes import TABLE_SYMBOLIC_TEMPLATE, BLOCK_SMALL_TEMPLATE
+import numpy as np
 
-env      = make_blocks_builder().build_env(rate=200.0)
+builder = ArmSceneBuilder()
+builder.add_resource("table", TABLE_SYMBOLIC_TEMPLATE)
+builder.add_resource("block", BLOCK_SMALL_TEMPLATE)
+builder.add_object("table", pos=[0.75, 0.80, 0.00])
+builder.add_object("block", pos=[0.45, 0.40, 0.31], rgba=[0.2, 0.5, 0.9, 1.0], name="block_0")
+
+env      = builder.build_env(rate=200.0)
 planner  = RRTStar(env)
 executor = PickPlaceExecutor(env, planner, GraspPlanner(table_z=0.27))
 
-executor.pick("block_0", env.get_object_position("block_0"),
-              env.get_object_half_size("block_0"),
-              env.get_object_orientation("block_0"))
-executor.place("block_0", place_center)
+with env.launch_viewer() as viewer:
+    env.rest(2.0)
+    ok = executor.pick("block_0",
+                       env.get_object_position("block_0"),
+                       env.get_object_half_size("block_0"),
+                       env.get_object_orientation("block_0"))
+    if ok:
+        executor.place("block_0", np.array([0.50, 0.25, 0.31]))
+    while viewer.is_running():
+        env.step()
 ```
 
-### Tabletop PDDL feasibility checking (headless)
-
-```python
-from tampanda import RRTStar
-from tampanda.symbolic import GridDomain, StateManager
-from tampanda.symbolic.domains.tabletop import make_symbolic_builder
-from tampanda.symbolic.domains.tabletop.feasibility import ActionFeasibilityChecker
-from tampanda.planners.grasp_planner import GraspPlanner
-
-env     = make_symbolic_builder().build_env(rate=200.0)
-planner = RRTStar(env)
-grid    = GridDomain(env.model, cell_size=0.04, working_area=(0.4, 0.3),
-                     table_geom_name="simple_table_surface",
-                     grid_offset_x=0.05, grid_offset_y=0.25)
-checker = ActionFeasibilityChecker(env, planner, StateManager(grid, env),
-                                   GraspPlanner(table_z=grid.table_height))
-feasible, _ = checker.check("pick", state, cylinder_name="cylinder_0")
-```
-
-## Remote Assets (YCB & Google Scanned Objects)
-
-The library can download objects from two external repositories and cache them locally:
-
-| Source | Repo | Objects |
-|--------|------|---------|
-| YCB | `elpis-lab/ycb_dataset` | ~80 YCB household objects (MJCF) |
-| GSO | `kevinzakka/mujoco_scanned_objects` | ~1 030 Google Scanned Objects (CoACD hulls) |
-
-Objects are cached under `~/.cache/tampanda/assets/` (override with `TAMPANDA_ASSETS_CACHE`).
-Set `GITHUB_TOKEN` in your environment to raise the GitHub API rate limit from 60 to 5 000 requests/hour.
-
-```python
-from tampanda.scenes import SceneBuilder, YCBDownloader, GSODownloader
-
-# Programmatic download + placement
-builder = SceneBuilder()
-builder.add_resource("table",   {"type": "builtin", "name": "objects/table_symbolic.xml"})
-builder.add_resource("can",     {"type": "ycb",  "name": "002_master_chef_can"})
-builder.add_resource("clock",   {"type": "gso",  "name": "Alarm_Clock"})
-builder.add_object("table",  pos=[0.45, 0.0,  0.00])
-builder.add_object("can",    pos=[0.40, 0.0,  0.33])
-builder.add_object("clock",  pos=[0.50, 0.1,  0.33])
-env = builder.build_env(rate=200.0)
-
-# List what's available
-print(YCBDownloader().list_available())
-print(GSODownloader().list_available()[:10])
-```
-
-Downloaded assets are full MJCF documents — meshes, materials, and textures are automatically
-namespaced and path-rewritten before being merged into the scene, so multiple copies of the
-same object can coexist without name collisions.
+For interactive walkthroughs see [`notebooks/franka_getting_started.ipynb`](notebooks/franka_getting_started.ipynb) and [`notebooks/mobile_getting_started.ipynb`](notebooks/mobile_getting_started.ipynb).
 
 ## Examples
 
-```bash
-cd examples
+All examples are in `examples/`. On macOS, use `mjpython` for anything that opens a viewer.
 
-# Basic control
-python basic_ik.py            # IK control
-python basic_rrt.py           # RRT* motion planning
+**Arm — control and grasping**
+- `basic_ik.py` — IK to a target pose, held in viewer
+- `basic_rrt.py` — RRT\* between two joint configurations
+- `grasping_ik_planner.py`, `grasping_rrt_planner.py` — geometry-aware grasping with ranked candidates
+- `blocks_world_rrt.py` — pick two cubes onto a platform with `PickPlaceExecutor`
 
-# Grasping with hardcoded poses
-python grasping_ik.py         # Pick and place with IK
-python grasping_rrt.py        # Pick and place with RRT*
-python grasping_rrt_camera.py # RRT* grasping + camera capture (headless)
+**Arm — symbolic planning (TAMP)**
 
-# Grasping with GraspPlanner (geometry-aware)
-python grasping_ik_planner.py
-python grasping_rrt_planner.py
+The tabletop domain connects PDDL task planning to the continuous planner: symbolic actions (pick, put) are validated with IK + RRT\* before being committed to the plan. `demo_pick_put.py` runs the full loop end-to-end.
 
-# Blocks world
-python blocks_world_rrt.py    # Pick two cubes onto a platform using PickPlaceExecutor
-python blocks_world_demo.py   # Symbolic state grounding + PDDL generation
-mjpython blocks_scene.py      # Blocks domain visual verification (SceneBuilder)
+- `symbolic.py` — grid-based PDDL planning in viewer
+- `tabletop_interactive.py` — real-time state grounding and interactive tabletop
+- `demo_pick_put.py` — full TAMP execution pipeline
+- `scene_builder.py` — programmatic scene construction with hot-reload
 
-# Symbolic / tabletop
-mjpython symbolic.py               # Grid-based PDDL planning
-python symbolic_grasping_rrt.py    # Symbolic plan executed with RRT*
-python demo_solve.py               # Headless BFS planning → full physical execution in viewer
-mjpython scene_builder.py          # Programmatic scene construction + hot-reload demo
+**Mobile robot**
+- `basic_navigation.py` — A\* through a slalom, Lidar/IMU readout at goal
+- `square_drive.py` — drift measurement over multiple square laps
 
-# Remote assets (YCB + Google Scanned Objects)
-mjpython object_browser.py                         # Interactive: browse, download, view objects
-mjpython object_browser.py --ycb 002_master_chef_can 003_cracker_box
-mjpython object_browser.py --gso Alarm_Clock Apple
-python  object_browser.py  --list-ycb              # Print all available YCB names (headless)
-python  object_browser.py  --list-gso              # Print all available GSO names (headless)
+**Perception and assets**
+- `camera_headless.py`, `pointcloud_demo.py` — RGB and pointcloud capture
+- `object_browser.py` — browse, download, and preview YCB / Google Scanned Objects
 
-# Benchmarks (all headless, fast)
-python benchmark_grasping.py              # GraspPlanner + RRT* on blocks
-python benchmark_cylinder_grasping.py     # Direct IK vs RRT* on cylinders
-python benchmark_feasibility.py           # ActionFeasibilityChecker correctness
-python benchmark_feasibility_params.py    # RRT/IK parameter sweep (finds fastest zero-FN combo)
+**Benchmarks** (all headless) — `benchmark_grasping.py`, `benchmark_cylinder_grasping.py`, `benchmark_feasibility.py`, `benchmark_feasibility_params.py`, `benchmark_parallel_rrt.py`
+
+## Citation
+
+If you use TAMPanda in your research, please cite:
+
+```bibtex
+@software{tampanda,
+  title  = {{TAMPanda}: Task and Motion Planning for the Franka Emika Panda},
+  author = {Swoboda, Daniel},
+  year   = {2025},
+  url    = {https://github.com/snoato/TAMPanda},
+}
 ```
 
-## Data Generation
+## Acknowledgements
 
-Generate PDDL problems with motion-planning-validated feasibility labels:
-
-```bash
-python -m tampanda.symbolic.domains.tabletop.generate_data \
-    --num-train 200 --num-val 20 --num-test 20 \
-    --output-dir data/tabletop \
-    --num-workers 0          # 0 = all available CPUs
-```
-
-Key flags:
-
-| Flag | Default | Notes |
-|------|---------|-------|
-| `--num-workers` | 1 | 0 = all CPUs |
-| `--grid-offset-x` | 0.05 | calibrated reachable zone |
-| `--grid-offset-y` | 0.25 | calibrated reachable zone |
-| `--rrt-iters` | 1000 | benchmarked fastest zero-false-negative |
-| `--ik-iters` | 100 | benchmarked fastest zero-false-negative |
-| `--ik-pos-thresh` | 0.005 | benchmarked fastest zero-false-negative |
-| `--wandb` | off | enable W&B logging |
-| `--no-viz` | off | skip per-instance PNG (faster on headless) |
-
-For cluster runs, see `slurm/generate_data.sbatch`.
-
-## Package Structure
-
-```
-tampanda/
-├── core/               # Abstract base classes
-├── environments/
-│   └── assets/         # Bundled scene XMLs (legacy; prefer domain builders)
-├── ik/                 # MinkIK
-├── planners/           # RRTStar, GraspPlanner, PickPlaceExecutor
-├── controllers/        # PositionController
-├── perception/         # MujocoCamera (RGB, depth, seg, pointcloud)
-├── scenes/             # SceneBuilder, AssetRegistry, SceneReloader, object templates
-│   └── assets/         # AssetCache, YCBDownloader, GSODownloader (remote asset system)
-├── symbolic/
-│   └── domains/
-│       ├── tabletop/   # GridDomain, StateManager, feasibility, generate_data, env_builder
-│       └── blocks/     # BlocksDomain, BlocksStateManager, env_builder
-└── utils/
-
-manipulation/           # Backwards-compatibility shim (re-exports tampanda, will be removed)
-```
+- [MuJoCo](https://mujoco.org) (Google DeepMind) — physics engine
+- [MINK](https://github.com/kevinzakka/mink) (Kevin Zakka) — differential IK library
+- [elpis-lab/ycb_dataset](https://github.com/elpis-lab/ycb_dataset) — YCB object assets
+- [kevinzakka/mujoco_scanned_objects](https://github.com/kevinzakka/mujoco_scanned_objects) — Google Scanned Objects assets
