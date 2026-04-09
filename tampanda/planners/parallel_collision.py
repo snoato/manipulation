@@ -3,10 +3,13 @@
 Each worker owns a private FrankaEnvironment instance so MuJoCo state is
 never shared between processes.
 
-Scene state (object positions, held body, collision exceptions) is sent once
-per planning query via ``set_scene()``, which caches it in each worker's
-process-global state.  Per-check payloads then only contain the small arm
-configs or edge endpoints — no repeated snapshot serialisation.
+Scene state (object positions, held body, collision exceptions) is passed
+directly with every check task so worker-side global state is never stale.
+``set_scene()`` snapshots the environment locally; the snapshot is then
+embedded in each ``check_edges_parallel`` / ``check_configs_parallel`` call.
+This avoids a race condition where ``pool.map`` with N tasks for N workers
+does not guarantee each worker processes exactly one task, which could leave
+some workers with uninitialised ``_scene_exc = None``.
 """
 
 from __future__ import annotations
@@ -22,9 +25,6 @@ import mujoco
 _env            = None
 _steps: int     = 5
 _order: np.ndarray = None
-_scene_qpos: np.ndarray = None   # cached object positions (qpos[7:])
-_scene_held     = None            # cached _collision_held_body dict
-_scene_exc      = None            # cached _collision_exception_ids set
 
 
 def _noop(_) -> None:
@@ -56,44 +56,28 @@ def _worker_init(xml_path: str, collision_check_steps: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scene-sync task (sent once per planning query, not per edge)
+# Per-check tasks — scene snapshot embedded in args
 # ---------------------------------------------------------------------------
 
-def _set_scene_task(snapshot: dict) -> None:
-    """Cache snapshot in this worker process and restore MuJoCo state."""
-    global _scene_qpos, _scene_held, _scene_exc
-    _scene_qpos = snapshot["qpos"][7:].copy()   # object positions only
-    _scene_held = snapshot["held_body"]
-    _scene_exc  = snapshot["exception_ids"]
-    _env.data.qpos[:] = snapshot["qpos"]
-    _env.data.qvel[:] = 0.0
-    _env._collision_held_body    = _scene_held
-    _env._collision_exception_ids = _scene_exc
-    mujoco.mj_forward(_env.model, _env.data)
-
-
-# ---------------------------------------------------------------------------
-# Per-check tasks — no snapshot in args
-# ---------------------------------------------------------------------------
-
-def _check_single_config_task(config: np.ndarray) -> bool:
-    """Check one arm configuration using cached scene state."""
-    _env.data.qpos[7:] = _scene_qpos   # reset objects (held body may drift)
-    _env._collision_held_body    = _scene_held
-    _env._collision_exception_ids = _scene_exc
+def _check_single_config_task(args: tuple) -> bool:
+    """Check one arm configuration. Scene snapshot included in args."""
+    scene_qpos, scene_held, scene_exc, config = args
+    _env.data.qpos[7:] = scene_qpos
+    _env._collision_held_body    = scene_held
+    _env._collision_exception_ids = scene_exc
     return _env.is_collision_free_no_restore(config)
 
 
 def _check_edge_task(args: tuple) -> bool:
-    """Check edge c1→c2 with binary-subdivision using cached scene state."""
-    c1, c2 = args
+    """Check edge c1→c2 with binary-subdivision. Scene snapshot included in args."""
+    scene_qpos, scene_held, scene_exc, c1, c2 = args
     env = _env
     inv   = 1.0 / _steps
     delta = c2 - c1
-    env._collision_held_body    = _scene_held
-    env._collision_exception_ids = _scene_exc
+    env._collision_held_body    = scene_held
+    env._collision_exception_ids = scene_exc
     for idx in _order:
-        env.data.qpos[7:] = _scene_qpos   # reset objects before each check
+        env.data.qpos[7:] = scene_qpos   # reset objects before each check
         config = c1 + (idx * inv) * delta
         if not env.is_collision_free_no_restore(config):
             return False
@@ -109,8 +93,13 @@ class CollisionWorkerPool:
 
     Typical usage per planning query::
 
-        pool.set_scene(env)               # sync scene state once
-        pool.check_edges_parallel(edges)  # lightweight per-call payloads
+        pool.set_scene(env)               # snapshot scene state locally
+        pool.check_edges_parallel(edges)  # scene embedded in each task
+
+    ``set_scene`` no longer broadcasts to workers; it only caches a snapshot
+    on this object.  The snapshot is then passed with every check task, so
+    each worker always operates on the correct scene regardless of which
+    worker picks up a given task.
 
     Args:
         xml_path: Path to the scene XML (must remain on disk while pool is alive).
@@ -132,43 +121,48 @@ class CollisionWorkerPool:
         )
         # Barrier: block until every worker has completed _worker_init.
         # ctx.Pool() returns before initializers finish, so without this,
-        # set_scene() tasks can land on workers still spinning up and leave
-        # others with _scene_exc = None.
+        # check tasks can land on workers still spinning up.
         self._pool.map(_noop, range(n_workers), chunksize=1)
         self.n_workers = n_workers
         self.collision_check_steps = collision_check_steps
+        self._scene_snapshot: dict | None = None
 
     # ------------------------------------------------------------------
     # Scene sync — call once per planning query
     # ------------------------------------------------------------------
 
     def set_scene(self, env) -> None:
-        """Broadcast current scene state to all workers (once per planning query).
+        """Snapshot current scene state for use in subsequent check calls.
 
-        Workers cache the snapshot locally; subsequent check calls carry only
-        the small arm configs or edge endpoints.
+        Unlike the previous implementation, this does NOT broadcast to workers.
+        The snapshot is passed directly with every check task, so all workers
+        always receive the correct scene regardless of task distribution.
         """
         held = env._collision_held_body
-        snapshot = {
-            "qpos": env.data.qpos.copy(),
+        self._scene_snapshot = {
+            "qpos": env.data.qpos[7:].copy(),   # object positions only
             "held_body": {
                 k: (v.copy() if isinstance(v, np.ndarray) else v)
                 for k, v in held.items()
             } if held else None,
             "exception_ids": set(env._collision_exception_ids),
         }
-        # One task per worker so every process caches the snapshot
-        self._pool.map(_set_scene_task, [snapshot] * self.n_workers)
 
     # ------------------------------------------------------------------
-    # Parallel checks — lightweight payloads after set_scene()
+    # Parallel checks — scene embedded in each task
     # ------------------------------------------------------------------
 
     def check_configs_parallel(self, configs: list[np.ndarray]) -> list[bool]:
         """Check N arm configurations in parallel; returns N booleans."""
         if not configs:
             return []
-        return self._pool.map(_check_single_config_task, configs)
+        if self._scene_snapshot is None:
+            raise RuntimeError(
+                "CollisionWorkerPool: call set_scene() before check_configs_parallel()"
+            )
+        s = self._scene_snapshot
+        args = [(s["qpos"], s["held_body"], s["exception_ids"], c) for c in configs]
+        return self._pool.map(_check_single_config_task, args)
 
     def check_edges_parallel(
         self, edges: list[tuple[np.ndarray, np.ndarray]]
@@ -176,7 +170,13 @@ class CollisionWorkerPool:
         """Check N edges in parallel (full binary-subdivision per edge); returns N booleans."""
         if not edges:
             return []
-        return self._pool.map(_check_edge_task, edges)
+        if self._scene_snapshot is None:
+            raise RuntimeError(
+                "CollisionWorkerPool: call set_scene() before check_edges_parallel()"
+            )
+        s = self._scene_snapshot
+        args = [(s["qpos"], s["held_body"], s["exception_ids"], c1, c2) for c1, c2 in edges]
+        return self._pool.map(_check_edge_task, args)
 
     # ------------------------------------------------------------------
     # Lifecycle
