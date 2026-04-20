@@ -1,0 +1,7 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- sphere r=2cm: mass=0.050 kg -->
+  <inertial mass="0.050" pos="0 0 0" diaginertia="0.00003 0.00003 0.00003"/>
+  <geom name="_geom" type="sphere" size="0.02" rgba="0.95 0.35 0.15 1"
+        solimp="0.99 0.99 0.01" solref="0.02 1"/>
+</body>

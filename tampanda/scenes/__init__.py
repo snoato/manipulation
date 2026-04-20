@@ -26,6 +26,8 @@ BLOCK_PLATFORM_TEMPLATE     = TEMPLATES_DIR / "objects" / "block_platform.xml"
 BLOCK_LARGE_PLATFORM_TEMPLATE = TEMPLATES_DIR / "objects" / "block_large_platform.xml"
 WALL_TEMPLATE                 = TEMPLATES_DIR / "objects" / "wall.xml"
 PILLAR_TEMPLATE               = TEMPLATES_DIR / "objects" / "pillar.xml"
+BALL_TEMPLATE                 = TEMPLATES_DIR / "objects" / "ball.xml"
+BIN_TEMPLATE                  = TEMPLATES_DIR / "objects" / "bin.xml"
 
 __all__ = [
     "SceneBuilder",
@@ -51,4 +53,6 @@ __all__ = [
     "BLOCK_LARGE_PLATFORM_TEMPLATE",
     "WALL_TEMPLATE",
     "PILLAR_TEMPLATE",
+    "BALL_TEMPLATE",
+    "BIN_TEMPLATE",
 ]

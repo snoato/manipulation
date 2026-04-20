@@ -1,0 +1,10 @@
+<body pos="0 0 0">
+  <joint name="_freejoint" type="free"/>
+  <!-- bin 12x12x7cm outer, 10x10x6cm inner: mass=0.180 kg -->
+  <inertial mass="0.180" pos="0 0 0.035" diaginertia="0.0006 0.0006 0.0006"/>
+  <geom name="_geom"          type="box" size="0.06  0.06  0.005" pos="0      0      0.005" rgba="0.18 0.35 0.72 1.00" solimp="0.99 0.99 0.01" solref="0.02 1"/>
+  <geom name="_wall_right"    type="box" size="0.005 0.06  0.035" pos="0.055  0      0.035" rgba="0.35 0.55 0.88 0.95" solimp="0.99 0.99 0.01" solref="0.02 1"/>
+  <geom name="_wall_left"     type="box" size="0.005 0.06  0.035" pos="-0.055 0      0.035" rgba="0.35 0.55 0.88 0.95" solimp="0.99 0.99 0.01" solref="0.02 1"/>
+  <geom name="_wall_front"    type="box" size="0.05  0.005 0.035" pos="0      0.055  0.035" rgba="0.35 0.55 0.88 0.95" solimp="0.99 0.99 0.01" solref="0.02 1"/>
+  <geom name="_wall_back"     type="box" size="0.05  0.005 0.035" pos="0      -0.055 0.035" rgba="0.35 0.55 0.88 0.95" solimp="0.99 0.99 0.01" solref="0.02 1"/>
+</body>

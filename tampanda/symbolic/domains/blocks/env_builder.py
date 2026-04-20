@@ -19,6 +19,8 @@ from tampanda.scenes import (
     BLOCK_MEDIUM_TEMPLATE,
     BLOCK_PLATFORM_TEMPLATE,
     BLOCK_LARGE_PLATFORM_TEMPLATE,
+    BALL_TEMPLATE,
+    BIN_TEMPLATE,
 )
 
 # 10-colour palette matching block_mat_0 … block_mat_9 from scene_blocks.xml
@@ -60,6 +62,8 @@ def make_blocks_builder() -> ArmSceneBuilder:
     b.add_resource("block_medium",        BLOCK_MEDIUM_TEMPLATE)
     b.add_resource("block_platform",      BLOCK_PLATFORM_TEMPLATE)
     b.add_resource("block_large_platform",BLOCK_LARGE_PLATFORM_TEMPLATE)
+    b.add_resource("ball",                BALL_TEMPLATE)
+    b.add_resource("bin",                 BIN_TEMPLATE)
 
     b._options = {
         "timestep":      "0.005",
@@ -86,5 +90,9 @@ def make_blocks_builder() -> ArmSceneBuilder:
                          pos=[100.0, 0.0, hide_z],
                          rgba=_COLORS[color_idx % len(_COLORS)])
             color_idx += 1
+
+    # Ball (ID=16) and bin (ID=17) parked off-screen
+    b.add_object("ball", name="ball_0", pos=[100.0, 0.0, 0.02])
+    b.add_object("bin",  name="bin_0",  pos=[100.0, 0.0, 0.035])
 
     return b
