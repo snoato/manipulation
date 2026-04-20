@@ -18,6 +18,8 @@
 
 **Scene & Assets** — `SceneBuilder` assembles scenes from reusable MJCF templates at runtime with hot-reload; `YCBDownloader` / `GSODownloader` fetch ~80 YCB objects and ~1 030 Google Scanned Objects on demand; `MujocoCamera` for RGB, depth, segmentation, and pointcloud rendering
 
+**Gymnasium Integration** — `tampanda.gym` wraps any TAMPanda scene as a standard `gymnasium.Env`; configurable observation spaces (joints, EE pose, object poses, RGB, depth, pointcloud, segmented pointcloud, multi-camera pointcloud); three action spaces (joint delta, joint target, Cartesian EE delta via IK); goal-conditioned `TampandaGoalEnv` with HER-compatible `compute_reward`; `DomainBridge` wired as `bridge_factory` for symbolic state in `info` and predicate-vector goals; `PseudoGraspWrapper` for kinematic grasp attachment; `ExpertActionWrapper` for imitation learning; spawn-safe `make_vec_env` for parallel rollouts
+
 ## Setup
 
 ```bash
@@ -79,7 +81,31 @@ with env.launch_viewer() as viewer:
         env.step()
 ```
 
-For interactive walkthroughs see [`notebooks/franka_getting_started.ipynb`](notebooks/franka_getting_started.ipynb), [`notebooks/mobile_getting_started.ipynb`](notebooks/mobile_getting_started.ipynb), and [`notebooks/domain_bridge_getting_started.ipynb`](notebooks/domain_bridge_getting_started.ipynb).
+For interactive walkthroughs see [`notebooks/franka_getting_started.ipynb`](notebooks/franka_getting_started.ipynb), [`notebooks/mobile_getting_started.ipynb`](notebooks/mobile_getting_started.ipynb), [`notebooks/domain_bridge_getting_started.ipynb`](notebooks/domain_bridge_getting_started.ipynb), and [`notebooks/gym_grasp_cube.ipynb`](notebooks/gym_grasp_cube.ipynb).
+
+### Gymnasium RL environment
+
+```python
+from tampanda.gym import TampandaGymEnv
+from tampanda.scenes import ArmSceneBuilder, TABLE_TEMPLATE, BLOCK_MEDIUM_TEMPLATE
+
+builder = ArmSceneBuilder()
+builder.add_resource("table", TABLE_TEMPLATE)
+builder.add_resource("cube", BLOCK_MEDIUM_TEMPLATE)
+builder.add_object("table", pos=[0.45, 0.0, 0.0])
+builder.add_object("cube", name="cube_0", pos=[0.45, 0.0, 0.315])
+builder.add_camera_orbit("workspace", target=[0.45, 0.0, 0.35], distance=0.75, elevation=45)
+
+env = TampandaGymEnv(
+    scene=builder,
+    obs=["joints", "ee_pose", "object_poses", "rgb"],
+    action_space_type="cartesian_delta",
+    cameras=["workspace"],
+    image_size=(64, 64),
+    reward_fn="dense_grasp",
+)
+obs, info = env.reset()
+```
 
 ## Examples
 
@@ -99,6 +125,9 @@ The tabletop domain connects PDDL task planning to the continuous planner: symbo
 - `tabletop_interactive.py` — real-time state grounding and interactive tabletop
 - `demo_pick_put.py` — full TAMP execution pipeline
 - `scene_builder.py` — programmatic scene construction with hot-reload
+
+**Gymnasium / RL**
+- `learn_stack_action.py` — SAC + HER to satisfy the `stack` action postconditions via `TampandaGoalEnv` and `DomainBridge`; geometric predicate grounding, shaped reward, `PseudoGraspWrapper`
 
 **Mobile robot**
 - `basic_navigation.py` — A\* through a slalom, Lidar/IMU readout at goal
