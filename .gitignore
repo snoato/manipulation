@@ -63,3 +63,6 @@ manipulation/symbolic/domains/tabletop/pddl/problems/*.pddl
 examples/grasp_captures/*.png
 wandb/examples/generate_data_slurm.sh
 slurm/
+
+CLAUDE.md
+AGENTS.md
