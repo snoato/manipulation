@@ -87,7 +87,7 @@ class DomainBridge:
         self._strict = strict_preconditions
         self._max_retries = sampler_max_retries
 
-        domain_str = Path(pddl_domain_path).read_text()
+        domain_str = Path(pddl_domain_path).read_text(encoding="utf-8")
         self._domain_str = re.sub(r"\(:requirements[^)]*\)", "", domain_str)
         m = re.search(r"\(define\s+\(domain\s+([^\s)]+)\)", self._domain_str)
         if m is None:

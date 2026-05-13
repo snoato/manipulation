@@ -284,7 +284,7 @@ class StateManager(BaseStateManager):
 """
         
         if output_path:
-            Path(output_path).write_text(problem)
+            Path(output_path).write_text(problem, encoding="utf-8")
         
         return problem
     

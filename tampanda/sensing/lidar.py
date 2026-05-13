@@ -36,6 +36,11 @@ from typing import Optional, Union, TYPE_CHECKING
 import mujoco
 import numpy as np
 
+# MuJoCo >= ~3.4 added a `normal` output argument to mj_multiRay (between
+# `dist` and `nray`). Detect once via the pybind11-generated signature in
+# the docstring so we stay compatible with both old and new releases.
+_MULTIRAY_HAS_NORMAL = "normal" in (mujoco.mj_multiRay.__doc__ or "")
+
 if TYPE_CHECKING:
     from tampanda.core.base_env import BaseEnvironment
 
@@ -167,7 +172,7 @@ class Lidar:
         self._geomid_buf[:] = -1
 
         # Batch raycast — single call for all rays
-        mujoco.mj_multiRay(
+        args = [
             model, data,
             pos, world_dirs_flat,
             self._geomgroup,
@@ -175,9 +180,14 @@ class Lidar:
             self._body_exclude_id,
             self._geomid_buf,
             self._dist_buf,
+        ]
+        if _MULTIRAY_HAS_NORMAL:
+            args.append(None)        # normal output buffer (unused)
+        args.extend([
             self._n_total,
             self._range_max,         # cutoff distance
-        )
+        ])
+        mujoco.mj_multiRay(*args)
 
         # Clamp: no-hit → range_max, too-close → range_min
         distances = np.where(

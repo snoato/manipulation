@@ -167,7 +167,7 @@ def _build_env(args) -> tuple:
         # Keep XML on disk so pool worker processes can load it
         fd, xml_path = tempfile.mkstemp(suffix=".xml",
                                         dir=str(builder._base.parent))
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(builder.build_xml())
         env = FrankaEnvironment(xml_path)
     else:
@@ -1749,7 +1749,7 @@ def _select_target(
 
 def _append_metadata(path: Path, args, split: str, config_num: int,
                      requested: int, actual: int, target: str) -> None:
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write("\n; --- generation metadata ---\n")
         f.write(f"; split: {split}\n")
         f.write(f"; config_num: {config_num}\n")
@@ -1789,7 +1789,7 @@ def _write_plan(
     Each tuple is written as a parenthesised PDDL action.
     """
     action_count = len(plan)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         for action in plan:
             f.write(f"({' '.join(action)})\n")
         f.write(f"; Total actions: {action_count}\n")

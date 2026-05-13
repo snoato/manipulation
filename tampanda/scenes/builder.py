@@ -489,7 +489,7 @@ class SceneBuilder:
         """
         registry = AssetRegistry(self._registry_base)
         path = registry.resolve(source)
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         stripped = text.strip()
 
         if stripped.startswith("<mujoco") or stripped.startswith("<?xml"):
@@ -762,7 +762,7 @@ class SceneBuilder:
         xml = self.build_xml()
         fd, tmp_path = tempfile.mkstemp(suffix=".xml", dir=self._base.parent)
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(xml)
             env = env_class(tmp_path, rate=rate, **kwargs)
         finally:
