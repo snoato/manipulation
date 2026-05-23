@@ -9,6 +9,11 @@ from tampanda.scenes.builder import (
     PANDA_BASE_XML,
     DIFFBOT_BASE_XML,
 )
+from tampanda.scenes.constants import (
+    DEFAULT_SHELF_PEDESTAL,
+    WORKSPACE_X_OFFSET,
+    WORKSPACE_Y_OFFSET,
+)
 from tampanda.scenes.registry import AssetRegistry
 from tampanda.scenes.reloader import SceneReloader
 from tampanda.scenes.assets import AssetCache, YCBDownloader, GSODownloader
@@ -35,6 +40,9 @@ __all__ = [
     "MobileSceneBuilder",
     "PANDA_BASE_XML",
     "DIFFBOT_BASE_XML",
+    "DEFAULT_SHELF_PEDESTAL",
+    "WORKSPACE_X_OFFSET",
+    "WORKSPACE_Y_OFFSET",
     "AssetRegistry",
     "SceneReloader",
     "AssetCache",

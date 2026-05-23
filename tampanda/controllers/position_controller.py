@@ -49,7 +49,17 @@ class PositionController(RobotArmController):
         self.trajectory = []   # compensated ctrl targets
         self._waypoints = []   # uncompensated joint targets (used for advance condition)
 
-    def step(self, delta: float = 0.1, grasping_delta: float = 0.3):
+    def step(self, delta: float = None, grasping_delta: float = 0.3):
+        # ``delta`` is the joint-space tolerance below which the
+        # controller treats the current waypoint as "reached" and
+        # advances.  An instance-level override lets callers pick a
+        # tighter delta for precision moves (gripper descent inside a
+        # cubicle) without affecting bulk motion.  Default 0.1 rad
+        # (~5.7°) is loose enough that the arm "chases" rather than
+        # following waypoints — fine for big sweeps, lethal for
+        # fingertip-scale contact moves.
+        if delta is None:
+            delta = getattr(self, "_advance_delta_override", 0.1)
         if self.status == ControllerStatus.IDLE:
             if self.trajectory:
                 self.status = ControllerStatus.MOVING

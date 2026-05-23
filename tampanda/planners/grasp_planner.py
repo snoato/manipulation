@@ -27,14 +27,25 @@ GRASP_CONTACT_OFFSET: float = 0.0137
 FINGER_TIP_BELOW: float = 0.0226
 
 # Hand capsule radius in body-Z / body-X directions (from hand_capsule geom).
-# Used for table-clearance checks in front-approach candidates.
 HAND_CAPSULE_RADIUS: float = 0.040
+
+# Link7 capsule radius (from base_panda.xml: ``size="0.055 0.025"``).  Bigger
+# than hand_capsule and just behind the EE attach site — for FRONT grasps
+# (palm-horizontal), link7 sits at roughly the same z as the EE and dips
+# below the EE by this radius.  The FRONT-approach table-clearance check
+# must use this, not just HAND_CAPSULE_RADIUS, or the wrist clips the shelf
+# floor when reaching deep into a cubicle.
+LINK7_CAPSULE_RADIUS: float = 0.055
 
 
 class GraspType(Enum):
     TOP_DOWN_X = "top_down_x"  # Approach from above; fingers close along world ±X
     TOP_DOWN_Y = "top_down_y"  # Approach from above; fingers close along world ±Y
     FRONT      = "front"       # Approach from −Y (robot side); fingers along world ±X
+    FRONT_X    = "front_x"     # Approach from −X (alt robot side, e.g. shelves
+                               # whose open face faces world −X); fingers along
+                               # world ±Z (vertical jaws — keeps the hand-body
+                               # narrow in Y so it fits between cube columns)
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +66,17 @@ _QUAT_TOP_DOWN_Y = np.array([0.0, 1.0, 0.0, 0.0])
 #   col-2 (body-Z in world) = [0,1,0] → approach from −Y direction ✓
 _QUAT_FRONT = np.array([-0.5, 0.5, 0.5, 0.5])
 
+# FRONT_X  →  R = [[0,0,1],[1,0,0],[0,1,0]]
+#   col-0 (body-X in world) = [0,1,0] → roll axis along world +Y
+#   col-1 (body-Y in world) = [0,0,1] → fingers along world ±Z (vertical jaws)
+#   col-2 (body-Z in world) = [1,0,0] → approach from −X direction ✓
+_QUAT_FRONT_X = np.array([0.5, 0.5, 0.5, 0.5])
+
 _QUATS: dict = {
     GraspType.TOP_DOWN_X: _QUAT_TOP_DOWN_X,
     GraspType.TOP_DOWN_Y: _QUAT_TOP_DOWN_Y,
     GraspType.FRONT:      _QUAT_FRONT,
+    GraspType.FRONT_X:    _QUAT_FRONT_X,
 }
 # ---------------------------------------------------------------------------
 
@@ -105,6 +123,7 @@ class GraspPlanner:
         lift_height:          float = 0.20,
         table_z:              float = 0.27,
         table_clearance:      float = 0.025,
+        allowed_types:        Optional[List["GraspType"]] = None,
     ):
         """
         Args:
@@ -118,6 +137,10 @@ class GraspPlanner:
         self.lift_height     = float(lift_height)
         self.table_z         = float(table_z)
         self.table_clearance = float(table_clearance)
+        self.allowed_types: List["GraspType"] = (
+            list(allowed_types) if allowed_types is not None
+            else [GraspType.TOP_DOWN_X, GraspType.TOP_DOWN_Y, GraspType.FRONT]
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -144,7 +167,7 @@ class GraspPlanner:
             block_half_size = np.array([0.02, 0.02, 0.02])
 
         candidates: List[GraspCandidate] = []
-        for gtype in (GraspType.TOP_DOWN_X, GraspType.TOP_DOWN_Y, GraspType.FRONT):
+        for gtype in self.allowed_types:
             c = self._make_candidate(gtype, block_pos, block_half_size, block_quat)
             if c is not None:
                 c.score = self._score(c, block_pos)
@@ -193,7 +216,7 @@ class GraspPlanner:
                 # Convert rotation matrix to WXYZ quaternion
                 quat = self._rotmat_to_quat(R)
 
-        if block_quat is None or gtype == GraspType.FRONT:
+        if block_quat is None or gtype in (GraspType.FRONT, GraspType.FRONT_X):
             quat = _QUATS[gtype]
             R    = quat_to_rotmat(quat)
 
@@ -236,15 +259,16 @@ class GraspPlanner:
                 grasp_pos = grasp_pos.copy()
                 grasp_pos[2] = min_grasp_z
 
-        # ---- table-clearance check for front approach --------------------
-        if gtype == GraspType.FRONT:
-            min_safe_z = self.table_z + HAND_CAPSULE_RADIUS + 0.01
+        # ---- table-clearance check for side approaches -------------------
+        if gtype in (GraspType.FRONT, GraspType.FRONT_X):
+            # Use the LINK7 capsule radius (5.5 cm) — for palm-horizontal
+            # grasps, link7 sits at the same z as the EE and dips below
+            # by its radius.  Plus a tiny contact tolerance.
+            min_safe_z = self.table_z + LINK7_CAPSULE_RADIUS + 0.005
             if grasp_pos[2] < min_safe_z:
-                # Try to raise the grasp to just clear the table.
                 raise_z   = min_safe_z - grasp_pos[2]
                 grasp_pos = grasp_pos + np.array([0.0, 0.0, raise_z])
                 block_top = block_pos[2] + block_half_size[2]
-                # Discard if the raised grasp is above the block entirely.
                 if grasp_pos[2] > block_top - 0.005:
                     return None
 

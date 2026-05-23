@@ -444,13 +444,23 @@ class FrankaEnvironment(RobotArmEnvironment):
         self.step()  # one last step so the caller is not stuck
         return False
 
-    def attach_object_to_ee(self, body_name: str):
+    def attach_object_to_ee(self, body_name: str,
+                              canonical_rel_pos: Optional[np.ndarray] = None):
         """Kinematically attach a free body to the end-effector.
 
         On every subsequent call to step(), the body is teleported to maintain
         its pose relative to the EE site at the moment of attachment.  This
         prevents slip during lifting without requiring a MuJoCo equality
         constraint defined in the XML.
+
+        If ``canonical_rel_pos`` is given, the body is FIRST teleported to
+        that hand-frame offset (and its orientation reset to identity-in-EE-
+        frame) before the relative pose is captured.  This is the right
+        thing to do whenever the contact dynamics dragged the block off-axis
+        during the gripper descent — the symbolic planner expects the block
+        to be at the canonical grip point; without this snap, every
+        subsequent put inherits the off-axis offset and lands the block far
+        from its target cell.
 
         Call detach_object() before opening the gripper.
         """
@@ -467,12 +477,24 @@ class FrankaEnvironment(RobotArmEnvironment):
         ee_pos = self.data.site_xpos[self._ee_site_id].copy()
         ee_mat = self.data.site_xmat[self._ee_site_id].reshape(3, 3).copy()
 
-        obj_pos = self.data.xpos[body_id].copy()
-        obj_mat = self.data.xmat[body_id].reshape(3, 3).copy()
-
-        # Relative pose in EE frame
-        rel_pos = ee_mat.T @ (obj_pos - ee_pos)
-        rel_mat = ee_mat.T @ obj_mat
+        if canonical_rel_pos is not None:
+            # Teleport the body to the canonical hand-frame offset before
+            # capturing.  Orientation snaps to identity-in-EE-frame so a
+            # rotation drag during the descent is also normalised away.
+            rel_pos = np.asarray(canonical_rel_pos, dtype=float).copy()
+            new_obj_pos = ee_pos + ee_mat @ rel_pos
+            qadr = self.model.jnt_qposadr[joint_id]
+            self.data.qpos[qadr:qadr + 3] = new_obj_pos
+            # Identity orientation in EE frame.
+            self.data.qpos[qadr + 3:qadr + 7] = _mat2quat(ee_mat)
+            mujoco.mj_forward(self.model, self.data)
+            rel_mat = np.eye(3)
+        else:
+            obj_pos = self.data.xpos[body_id].copy()
+            obj_mat = self.data.xmat[body_id].reshape(3, 3).copy()
+            # Relative pose in EE frame
+            rel_pos = ee_mat.T @ (obj_pos - ee_pos)
+            rel_mat = ee_mat.T @ obj_mat
 
         self._attached = {
             "body_name": body_name,
