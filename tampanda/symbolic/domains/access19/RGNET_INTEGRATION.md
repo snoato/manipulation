@@ -322,28 +322,67 @@ serial somewhere.  Check:
 
 Tabletop's `SpeculativeFeasibilityRRT(batch_size=4) + CollisionWorkerPool`
 parallelises RRT extend candidates within a single planning call.
-That pattern doesn't transfer to access-19, and we benchmarked it
-empirically before deciding (see `examples/access19_homeseed_ik_experiment.py`
-for the agreement test, and the revert in commit history for the
-performance benchmark).
+That pattern doesn't transfer to access-19.  Don't spend time rebuilding
+it — we tested two designs:
 
-* **Agreement**: home-seeded IK across all chain waypoints preserves
-  366/366 action agreement vs sequential-seeded IK on the L4 ground
-  truth (3 plans × ~74 actions).  So parallel IK is *safe*.
-* **Performance**: on the L4 plan, dispatching ~6-12 IK probes per
-  chain to a 4-worker pool was **0.95× on interior actions** and
-  unchanged on deck actions.  Net regression of ~5% wall.
-* **Why**: per-action chain wall is already ~15 ms on interior
-  (~25 ms on deck).  IK convergence is ~5-8 ms of that.  Pool
-  dispatch overhead (~1 ms per item × 6-12 items) exceeds the IK
-  savings.  Tabletop's RRT wins because each candidate's collision
-  check is ~10-50 ms — a much higher work-per-task ratio.
+**Design 1 — Parallel IK only** (dispatch each waypoint's IK to a
+worker; segments stay sequential):
+* Agreement: 100% (home-seeded IK across chain waypoints preserves
+  agreement on 366/366 actions across 3 L4 plans, verified by
+  `examples/access19_homeseed_ik_experiment.py`).
+* Performance: **0.96× on interior actions** (5% regression).
+* Cause: per-IK work is ~1.5 ms; pool dispatch is ~1 ms per item.
+  The IK savings barely beat dispatch even in the best case.
+
+**Design 2 — Parallel IK + parallel segment checks** (full two-phase
+pre-compute including the linear-joint-space collision checks):
+* Per chain pre-compute overhead (measured in-context): ~8 ms (sync
+  19 objects + IK batch for 4-7 waypoints + segment batch).
+* Per cache-hit savings: **~1.3 ms** (not the ~7 ms I estimated
+  before measuring).  Reason: in FAST mode with the substep
+  reduction (1 substep per row-step lerp), each live `plan_joint_lerp`
+  is only ~3 ms total; the cache hit only saves the IK + 1
+  collision check + restore = ~1.3 ms.
+* Break-even: ~6 cache hits per chain to amortise the 8 ms overhead.
+  L4 average is ~5 hits per chain → slight net regression.
+* Result: **0.96× on interior actions, no change on deck**.
+
+**Architectural conclusion**: at access-19's chain granularity in
+FAST mode, every inner-call parallelism scheme hits the same wall.
+Per-task work is sub-dispatch-overhead.  Tabletop's RRT wins because
+each candidate's collision check is ~10-50 ms — a much higher
+work-per-task ratio than what access-19's reduced-substep FAST chain
+exposes.
 
 If rgnet later finds the chain compute (not `restore_state`) is the
 bottleneck, **the right intervention is `mjx` (vectorised MuJoCo via
 JAX)**, not CPU-side multiprocessing.  `mjx` batches `mj_forward`
 natively on GPU and would let you parallelise inside the IK iteration
 loop, not just across IK calls.
+
+### Calibrated per-call cost breakdown (this machine, M-series Mac)
+
+For a deep `pick ooi shelf_interior__3_6` from staging-home, `fast=True`:
+
+```
+check_action total:           ~225 ms
+  restore_state:               ~0.6 ms   (negligible — confirmed)
+  plan_joint_lerp × 16:        ~204 ms
+    converge_ik (per IK):       ~1.5 ms
+    _segment_collision_free_n:  ~7.5 ms per lerp (dominant)
+    other internals:            ~4 ms per lerp
+
+mj_forward (per call):         0.8 ms    (not 6 ms as previously suspected)
+check_collisions:              2.9 ms    (Python-side contact iteration —
+                                          ~4× the mj_forward cost)
+```
+
+The bottleneck is `_segment_collision_free_n`'s Python-side
+`check_collisions` iteration, not `mj_forward` itself.  Each
+`is_collision_free` call = 1 `mj_forward` (0.8 ms) + contact iteration
+(2 ms).  Reducing the contact iteration cost (or batching it on GPU
+via `mjx`) is the only path to meaningful per-call wall-time
+reduction.
 
 ## Known constraints / gotchas
 
