@@ -318,6 +318,33 @@ serial somewhere.  Check:
    per state, expect ~12 calls/sec/state (4 workers) vs ~4.5
    single-process.
 
+### Why we don't expose inner-call (intra-chain) parallelism
+
+Tabletop's `SpeculativeFeasibilityRRT(batch_size=4) + CollisionWorkerPool`
+parallelises RRT extend candidates within a single planning call.
+That pattern doesn't transfer to access-19, and we benchmarked it
+empirically before deciding (see `examples/access19_homeseed_ik_experiment.py`
+for the agreement test, and the revert in commit history for the
+performance benchmark).
+
+* **Agreement**: home-seeded IK across all chain waypoints preserves
+  366/366 action agreement vs sequential-seeded IK on the L4 ground
+  truth (3 plans × ~74 actions).  So parallel IK is *safe*.
+* **Performance**: on the L4 plan, dispatching ~6-12 IK probes per
+  chain to a 4-worker pool was **0.95× on interior actions** and
+  unchanged on deck actions.  Net regression of ~5% wall.
+* **Why**: per-action chain wall is already ~15 ms on interior
+  (~25 ms on deck).  IK convergence is ~5-8 ms of that.  Pool
+  dispatch overhead (~1 ms per item × 6-12 items) exceeds the IK
+  savings.  Tabletop's RRT wins because each candidate's collision
+  check is ~10-50 ms — a much higher work-per-task ratio.
+
+If rgnet later finds the chain compute (not `restore_state`) is the
+bottleneck, **the right intervention is `mjx` (vectorised MuJoCo via
+JAX)**, not CPU-side multiprocessing.  `mjx` batches `mj_forward`
+natively on GPU and would let you parallelise inside the IK iteration
+loop, not just across IK calls.
+
 ## Known constraints / gotchas
 
 * **macOS sim viz requires `mjpython`** — but rgnet on remote uses
