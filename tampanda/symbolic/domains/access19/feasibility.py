@@ -101,6 +101,9 @@ def _fast_env(env, executor):
         executor._wait_gripper_closed = _fast_w_closed
     if orig_w_open is not None:
         executor._wait_gripper_open = _fast_w_open
+    # Flag read by ``chains.py`` row-step substep helper to drop
+    # intermediate collision checks for inside-cubicle short hops.
+    env._fast_mode = True
     try:
         yield
     finally:
@@ -110,6 +113,7 @@ def _fast_env(env, executor):
             executor._wait_gripper_closed = orig_w_closed
         if orig_w_open is not None:
             executor._wait_gripper_open = orig_w_open
+        env._fast_mode = False
 
 
 # ---------------------------------------------------------------------------

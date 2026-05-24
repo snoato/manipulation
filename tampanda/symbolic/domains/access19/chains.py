@@ -134,6 +134,16 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
                 return p
         return None
 
+    def _row_step_substeps(default: int) -> int:
+        """Inside-cubicle short-hop substep count.  In FAST mode the
+        executor teleports to ``path[-1]`` and never traverses the
+        path, so per-substep collision checks validate a trajectory
+        we don't execute.  Column-front blocking is caught by the
+        pre-filter in ``feasibility.py``.  Returns 1 in FAST (just
+        the goal-config check), default otherwise.
+        """
+        return 1 if getattr(env, "_fast_mode", False) else default
+
     def _try_cartesian(target: np.ndarray, n_substeps: int):
         for q in _QUATS:
             p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
@@ -287,7 +297,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         while cur_y < target_y - 1e-6:
             step_y = min(cur_y + step, target_y)
             p = _try_lerp(np.array([col_x, step_y, grasp_z]),
-                            n_substeps=8)
+                            n_substeps=_row_step_substeps(8))
             if p is None:
                 env.controller._advance_delta_override = 0.1
                 print(f"[access19 put_interior] row-step at y={step_y:.3f}"
@@ -298,7 +308,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
 
         # 3. Final descent to the placement pose.
         p = _try_lerp(np.array([col_x, target_y, grasp_z]),
-                        n_substeps=6)
+                        n_substeps=_row_step_substeps(6))
         if p is None:
             env.controller._advance_delta_override = 0.1
             print("[access19 put_interior] final descent plan failed")
@@ -314,7 +324,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         # 5. Lift 4 cm.
         retreat_z = grasp_z + 0.04
         p = _try_lerp(np.array([col_x, target_y, retreat_z]),
-                        n_substeps=6)
+                        n_substeps=_row_step_substeps(6))
         if p is not None:
             _execute(p, executor.retreat_step_size)
 
@@ -323,7 +333,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         while cur_y > front_row_y + 1e-6:
             step_y = max(cur_y - step, front_row_y)
             p = _try_lerp(np.array([col_x, step_y, retreat_z]),
-                            n_substeps=8)
+                            n_substeps=_row_step_substeps(8))
             if p is None:
                 env.controller._advance_delta_override = 0.1
                 return True  # block placed; partial retreat acceptable
@@ -480,6 +490,16 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
                 return p
         return None
 
+    def _row_step_substeps(default: int) -> int:
+        """Inside-cubicle short-hop substep count.  In FAST mode the
+        executor teleports to ``path[-1]`` and never traverses the
+        path, so per-substep collision checks validate a trajectory
+        we don't execute.  Column-front blocking is caught by the
+        pre-filter in ``feasibility.py``.  Returns 1 in FAST (just
+        the goal-config check), default otherwise.
+        """
+        return 1 if getattr(env, "_fast_mode", False) else default
+
     def _try_cartesian(target: np.ndarray, n_substeps: int):
         for q in _QUATS:
             p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
@@ -598,7 +618,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         while cur_y < target_y - 1e-6:
             step_y = min(cur_y + step, target_y)
             p = _try_lerp(np.array([col_x, step_y, grasp_z]),
-                            n_substeps=8)
+                            n_substeps=_row_step_substeps(8))
             if p is None:
                 env.controller._advance_delta_override = 0.1
                 print(f"[access19 pick_interior] row-step at y="
@@ -608,7 +628,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
             cur_y = step_y
 
         p = _try_lerp(np.array([col_x, target_y, grasp_z]),
-                        n_substeps=6)
+                        n_substeps=_row_step_substeps(6))
         if p is None:
             env.controller._advance_delta_override = 0.1
             print("[access19 pick_interior] final descent plan failed")
@@ -624,7 +644,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         # Lift 4 cm.
         retreat_z = grasp_z + 0.04
         p = _try_lerp(np.array([col_x, target_y, retreat_z]),
-                        n_substeps=6)
+                        n_substeps=_row_step_substeps(6))
         if p is not None:
             _execute(p, executor.lift_step_size)
 
@@ -633,7 +653,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         while cur_y > front_row_y + 1e-6:
             step_y = max(cur_y - step, front_row_y)
             p = _try_lerp(np.array([col_x, step_y, retreat_z]),
-                            n_substeps=8)
+                            n_substeps=_row_step_substeps(8))
             if p is None:
                 env.controller._advance_delta_override = 0.1
                 return True  # block in hand; partial retreat OK

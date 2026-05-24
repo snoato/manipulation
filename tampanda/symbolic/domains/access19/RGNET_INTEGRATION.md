@@ -237,15 +237,86 @@ a full training run from this handoff; report back first.
 
 ## Throughput / sizing notes
 
-From the pre-rgnet QA (`access19_rgnet_qa.py`):
+From the pre-rgnet QA (`access19_rgnet_qa.py`), latest run after the
+fast-mode pre-filter + substep reduction (commits `253f4f5`, `<next>`):
 
-* Single env, fast feasibility: ~360 ms mean, ~470 ms median per call.
-* 4-worker parallel pool: ~105 ms wall per call, ~9.5 calls/sec
-  aggregate.  Sub-linear scaling (Python-side IK + chain logic is the
-  bottleneck, not pure compute).
+| | Single-env | 4-worker pool |
+|--|--|--|
+| Mean per call | ~220 ms | ~75 ms wall |
+| Median | ~205 ms | — |
+| Throughput | ~4.6 calls/s/worker | ~13.4 calls/s aggregate |
 
-For an episode replay with N actions, expect roughly
-`N × 350 ms` of feasibility-check wall time on a single worker.
+Sub-linear scaling at 4 workers — Python-side IK + chain logic is the
+bottleneck, not pure compute.  For an episode replay with N actions,
+expect roughly `N × 220 ms` of feasibility-check wall time on a single
+worker.
+
+## Parallel feasibility checker — usage
+
+**There IS a parallel checker** at `access19/parallel.py`:
+`ParallelFeasibilityChecker`.  Persistent pool, one env per worker,
+~1.5 s init per worker then services many `(layout, held, action)`
+payloads.  Used by `generate_data.py --num-workers`.
+
+```python
+from tampanda.symbolic.domains.access19.parallel import (
+    ParallelFeasibilityChecker,
+)
+
+with ParallelFeasibilityChecker(
+    n_workers=4, fast=True, start_method="spawn",
+) as ck:
+    results = ck.check_batch([(layout, held, action), ...])
+    # results in input order; each is the same dict as check_action
+    # returns: {success, elapsed_s, error, fast, ...}
+```
+
+**Pass `start_method="spawn"` from inside a CUDA / torch process.**  The
+default `mp.get_context()` on Linux is `fork`, which corrupts a CUDA
+context.  rgnet workers almost certainly have torch initialised, so
+forking from inside them will hang or segfault.  The pool init builds a
+fresh MuJoCo env per worker, so the spawn cost is the same either way.
+
+`_layout_to_state(layout, held)` (same module) is the helper to convert
+a `{obj: cell_id}` placement dict + optional held object to the
+ground-state dict that `check_action` expects.  This is what the
+worker uses internally — keeps per-task pickling cheap.
+
+### When parallelism helps in rgnet (and when it doesn't)
+
+**Use the pool when:**
+
+* Data-gen / oracle planner — batch many `(state, action)` probes from
+  a search loop.  Big wins.
+* Batched Q-value evaluation — if your value function probes K
+  candidate actions from the same state and you want their feasibility
+  flags concurrently.  Amortises the ~1 ms dispatch overhead at K ≥ 50.
+
+**Don't use it when:**
+
+* You already have N parallel rollouts via `SubprocVecEnv` and each
+  rollout does one feasibility check per env step.  The parallelism
+  is already at the rollout level — adding an inner pool means N × M
+  processes with no extra throughput.
+* The check is on the critical path of a sequential rollout (e.g.,
+  policy proposes one action, env steps, repeat).  Pool dispatch adds
+  ~1 ms; single-env in-process call has ~0 overhead.
+
+### Quick diagnostic
+
+If you genuinely see "single-process only" throughput, the loop is
+serial somewhere.  Check:
+
+1. Is feasibility called once per env step in a single rollout?  Then
+   throughput is bounded by `1 / per_call_time` ≈ 4.5 / s.  This is
+   the *right* number for that pattern — not a loss.
+2. Are you running N parallel envs?  Aggregate throughput should be
+   `N × 4.5 / s`.  If not, your env parallelism is broken, not the
+   feasibility checker.
+3. Are you doing batch action eval?  Drop in
+   `ParallelFeasibilityChecker(spawn)`.  At K=64 candidate actions
+   per state, expect ~12 calls/sec/state (4 workers) vs ~4.5
+   single-process.
 
 ## Known constraints / gotchas
 
