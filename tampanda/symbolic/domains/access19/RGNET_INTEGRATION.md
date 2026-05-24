@@ -302,63 +302,74 @@ worker uses internally — keeps per-task pickling cheap.
   policy proposes one action, env steps, repeat).  Pool dispatch adds
   ~1 ms; single-env in-process call has ~0 overhead.
 
-### Quick diagnostic
+### Per-call wall time is the bottleneck (not aggregate)
 
-If you genuinely see "single-process only" throughput, the loop is
-serial somewhere.  Check:
+The rgnet workload here doesn't benefit from outer (rollout-level)
+parallelism the way standard SubprocVecEnv RL setups do.  Per-call
+wall time of `check_action` IS the bottleneck.  We tried inner-call
+parallelism to reduce it and the result is: **it can't go below ~140
+ms per deep-pick check on CPU** without changing the architecture.
+See the inner-parallelism findings below for the empirical ceiling.
 
-1. Is feasibility called once per env step in a single rollout?  Then
-   throughput is bounded by `1 / per_call_time` ≈ 4.5 / s.  This is
-   the *right* number for that pattern — not a loss.
-2. Are you running N parallel envs?  Aggregate throughput should be
-   `N × 4.5 / s`.  If not, your env parallelism is broken, not the
-   feasibility checker.
-3. Are you doing batch action eval?  Drop in
-   `ParallelFeasibilityChecker(spawn)`.  At K=64 candidate actions
-   per state, expect ~12 calls/sec/state (4 workers) vs ~4.5
-   single-process.
-
-### Why we don't expose inner-call (intra-chain) parallelism
+### Inner-call (intra-chain) parallelism — tested, doesn't transfer
 
 Tabletop's `SpeculativeFeasibilityRRT(batch_size=4) + CollisionWorkerPool`
-parallelises RRT extend candidates within a single planning call.
-That pattern doesn't transfer to access-19.  Don't spend time rebuilding
-it — we tested two designs:
+parallelises RRT extend candidates within a single planning call.  We
+hoped that pattern would transfer to access-19's chain by pre-computing
+all chain waypoints' IK + segment collision checks in parallel.  It
+doesn't.  Two designs tested:
 
-**Design 1 — Parallel IK only** (dispatch each waypoint's IK to a
-worker; segments stay sequential):
+**Design 1 — Parallel IK only** (each waypoint's IK to a worker;
+segments stay sequential):
 * Agreement: 100% (home-seeded IK across chain waypoints preserves
   agreement on 366/366 actions across 3 L4 plans, verified by
   `examples/access19_homeseed_ik_experiment.py`).
 * Performance: **0.96× on interior actions** (5% regression).
 * Cause: per-IK work is ~1.5 ms; pool dispatch is ~1 ms per item.
-  The IK savings barely beat dispatch even in the best case.
 
-**Design 2 — Parallel IK + parallel segment checks** (full two-phase
-pre-compute including the linear-joint-space collision checks):
-* Per chain pre-compute overhead (measured in-context): ~8 ms (sync
-  19 objects + IK batch for 4-7 waypoints + segment batch).
-* Per cache-hit savings: **~1.3 ms** (not the ~7 ms I estimated
-  before measuring).  Reason: in FAST mode with the substep
-  reduction (1 substep per row-step lerp), each live `plan_joint_lerp`
-  is only ~3 ms total; the cache hit only saves the IK + 1
-  collision check + restore = ~1.3 ms.
-* Break-even: ~6 cache hits per chain to amortise the 8 ms overhead.
-  L4 average is ~5 hits per chain → slight net regression.
-* Result: **0.96× on interior actions, no change on deck**.
+**Design 2 — Parallel IK + parallel segment checks** (two-phase
+pre-compute including the linear-joint-space collision checks for
+the pre-grasp half of each chain):
+* Per chain pre-compute overhead: ~8 ms (sync 19 objects + IK batch
+  for 4-7 waypoints + segment batch).
+* Per cache-hit savings: **~1.3 ms**.  Reason: in FAST mode with
+  substep reduction (1 substep per row-step lerp), each live
+  `plan_joint_lerp` is only ~3 ms total; the cache hit only saves
+  the IK + 1 collision check + restore = ~1.3 ms.
+* Break-even: ~6 cache hits per chain to amortise overhead.  L4
+  average is ~5 → slight net regression.
+* Result: **0.96× on interior, no change on deck**.
 
-**Architectural conclusion**: at access-19's chain granularity in
-FAST mode, every inner-call parallelism scheme hits the same wall.
-Per-task work is sub-dispatch-overhead.  Tabletop's RRT wins because
-each candidate's collision check is ~10-50 ms — a much higher
-work-per-task ratio than what access-19's reduced-substep FAST chain
-exposes.
+**Why CPU inner-call parallelism is bounded for this workload**:
+the per-task work (~3 ms per FAST-mode lerp) is too close to the
+multiprocessing dispatch overhead (~1 ms per item) for parallelism
+to amortise.  Tabletop's RRT wins because each candidate's collision
+check is 10-50 ms (work:dispatch ratio 50:1 vs access-19's 3:1).
 
-If rgnet later finds the chain compute (not `restore_state`) is the
-bottleneck, **the right intervention is `mjx` (vectorised MuJoCo via
-JAX)**, not CPU-side multiprocessing.  `mjx` batches `mj_forward`
-natively on GPU and would let you parallelise inside the IK iteration
-loop, not just across IK calls.
+**Realistic theoretical ceiling** if we extended the experiment to
+both chain halves AND substep-parallelism inside the long
+approach/exit lerps: ~1.4× on deep-pick chain wall, ~1.2× averaged
+over the L4 distribution (shallow picks dominate, parallelism
+doesn't help them).  Not worth the engineering vs. `mjx` (next).
+
+### What to do if chain wall time is on the critical path
+
+**`mjx` (vectorised MuJoCo via JAX)** is the architecturally correct
+next intervention.  It batches `mj_forward` natively on GPU, which
+removes the per-task dispatch cost that bounds CPU-side parallelism.
+A batched 16-substep collision check could run as one GPU kernel
+instead of 16 serial CPU calls — projected 5-10× on the chain
+compute portion.
+
+Outside `mjx`, the cleaner small wins are:
+
+* **Caching `(layout, held, action) → result`** — many states repeat
+  during a policy's K-best action search.  LRU cap ~50k.  Lookup
+  ~1 µs; per-hit save = full call cost ~220 ms.  Even 5% repeat rate
+  is a meaningful win.
+* **Tightening `is_collision_free`** — Python-side contact iteration
+  is 2.9 ms per call (4× the `mj_forward` cost).  Cython / native
+  refactor of the contact loop could shave ~30% off chain wall.
 
 ### Calibrated per-call cost breakdown (this machine, M-series Mac)
 
@@ -372,10 +383,18 @@ check_action total:           ~225 ms
     _segment_collision_free_n:  ~7.5 ms per lerp (dominant)
     other internals:            ~4 ms per lerp
 
-mj_forward (per call):         0.8 ms    (not 6 ms as previously suspected)
+mj_forward (per call):         0.8 ms    (not 6 ms — earlier estimate
+                                          was on different hardware)
 check_collisions:              2.9 ms    (Python-side contact iteration —
                                           ~4× the mj_forward cost)
 ```
+
+The `check_collisions` Python iteration is the single biggest target
+for non-architectural optimisation.  It's called inside every
+`is_collision_free`, which fires ~3-4× per `plan_joint_lerp` (config
+check + substep checks + restore-state forward).  At 16 lerps per
+deep chain, that's ~50 contact-iteration calls × 2.9 ms = 145 ms of
+pure Python contact code per deep `check_action`.
 
 The bottleneck is `_segment_collision_free_n`'s Python-side
 `check_collisions` iteration, not `mj_forward` itself.  Each
