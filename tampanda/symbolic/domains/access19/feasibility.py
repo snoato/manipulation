@@ -113,6 +113,66 @@ def _fast_env(env, executor):
 
 
 # ---------------------------------------------------------------------------
+# Symbolic pre-filter (fast mode only)
+# ---------------------------------------------------------------------------
+
+
+_INTERIOR_PREFIX = "shelf_interior__"
+
+
+def _occupied_cells(state: Dict[Tuple, bool]) -> set:
+    """Extract the set of currently-occupied cell ids from ``state``."""
+    return {
+        key[1]
+        for key, value in state.items()
+        if value and isinstance(key, tuple) and len(key) == 3
+            and key[0] == "occupied"
+    }
+
+
+def _column_front_blocked(occupied: set, cell_id: str) -> bool:
+    """True iff the chain's interior approach to ``cell_id`` is blocked
+    by a cube at the same column with a smaller (closer-to-front)
+    ``iy``.
+
+    Access-19 interior chains enter at the open ``-y`` face and
+    row-step inward in ``iy``.  A cube at ``(ix, iy')`` with
+    ``iy' < iy`` occludes the chain — the row-step IK fails at the
+    first blocker.  This check is O(rows) and runs no IK or physics.
+
+    Returns ``False`` for non-interior cells (``shelf_top__`` is open
+    from above) or malformed cell ids — keeps the check safe to apply
+    blanket-style.
+    """
+    if not cell_id.startswith(_INTERIOR_PREFIX):
+        return False
+    try:
+        suffix = cell_id[len(_INTERIOR_PREFIX):]
+        ix_str, iy_str = suffix.split("_")
+        ix, iy = int(ix_str), int(iy_str)
+    except ValueError:
+        return False
+    for iy_prime in range(iy):
+        if f"{_INTERIOR_PREFIX}{ix}_{iy_prime}" in occupied:
+            return True
+    return False
+
+
+def _prefilter_reject(
+    action: Tuple, occupied: set,
+) -> bool:
+    """Fast-mode symbolic pre-filter — currently just the column-front
+    occlusion check for interior picks and puts.  Returns True iff the
+    action is provably infeasible from ``occupied`` and can be
+    short-circuited without restoring state or running the chain.
+    """
+    if not action or action[0] not in ("pick", "put"):
+        return False
+    _, _, cell_id = action
+    return _column_front_blocked(occupied, cell_id)
+
+
+# ---------------------------------------------------------------------------
 # Action dispatch
 # ---------------------------------------------------------------------------
 
@@ -179,6 +239,20 @@ def check_action(
         "fast": bool}``.
     """
     t_start = time.perf_counter()
+
+    # Fast-mode pre-filter: reject column-front-occluded interior
+    # actions without restoring state or running the chain.  Exact
+    # under chain semantics (no false negatives) — see
+    # ``_column_front_blocked``.  FULL mode keeps full ground-truth
+    # semantics and skips the filter.
+    if fast and _prefilter_reject(action, _occupied_cells(state)):
+        return {
+            "success": False,
+            "elapsed_s": time.perf_counter() - t_start,
+            "error": None,
+            "fast": fast,
+            "prefiltered": True,
+        }
 
     restore_state(env, workspace, config, state, object_names,
                        home_qpos=home_qpos)
@@ -268,25 +342,40 @@ def check_action_sequence(
                 mujoco.mj_forward(env.model, env.data)
 
             t_a = time.perf_counter()
-            try:
-                ok = _dispatch(env, workspace, pick_fn, put_fn, action)
-                err = None
-                if ok:
-                    if action[0] == "pick":
-                        _, _obj, _ = action
-                        running_layout.pop(_obj, None)
-                    elif action[0] == "put":
-                        _, _obj, _cell_id = action
-                        running_layout[_obj] = _cell_id
-            except Exception as exc:
+            # Fast-mode pre-filter (same semantics as ``check_action``).
+            # Build ``occupied`` from the running layout, not from the
+            # initial ``state`` — keeps the check honest as the
+            # sequence evolves.
+            prefiltered = False
+            if fast and _prefilter_reject(
+                action, set(running_layout.values())
+            ):
                 ok = False
-                err = f"{type(exc).__name__}: {exc}"
-            per_action.append({
+                err = None
+                prefiltered = True
+            else:
+                try:
+                    ok = _dispatch(env, workspace, pick_fn, put_fn, action)
+                    err = None
+                    if ok:
+                        if action[0] == "pick":
+                            _, _obj, _ = action
+                            running_layout.pop(_obj, None)
+                        elif action[0] == "put":
+                            _, _obj, _cell_id = action
+                            running_layout[_obj] = _cell_id
+                except Exception as exc:
+                    ok = False
+                    err = f"{type(exc).__name__}: {exc}"
+            entry = {
                 "action": action,
                 "success": bool(ok),
                 "elapsed_s": time.perf_counter() - t_a,
                 "error": err,
-            })
+            }
+            if prefiltered:
+                entry["prefiltered"] = True
+            per_action.append(entry)
             if not ok:
                 overall_ok = False
                 if short_circuit:
