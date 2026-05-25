@@ -149,6 +149,13 @@ _CURRICULA: Dict[str, List[Tuple[int, int]]] = {
     "train_600": [(0, 60), (1, 120), (2, 120), (3, 120), (4, 90), (5, 90)],
     "train_400": [(0, 40), (1, 80), (2, 80), (3, 80), (4, 60), (5, 60)],
     "train_200": [(0, 20), (1, 40), (2, 40), (3, 40), (4, 30), (5, 30)],
+    # train_l0_l4: L5 held out for OOD evaluation.  Same per-level counts
+    # as train_600's L0-L4 portion (60+120+120+120+90 = 510).  L5's
+    # composite templates (multi_tower, double_bridges, staircase,
+    # compound) never appear in this train set, so val/test L5 numbers
+    # measure compositional generalization to never-seen template
+    # structures.
+    "train_l0_l4": [(0, 60), (1, 120), (2, 120), (3, 120), (4, 90)],
     "val_per_level": [(k, 20) for k in range(6)],
     "test_per_level": [(k, 20) for k in range(6)],
 }
@@ -1135,9 +1142,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--curriculum-split", type=str, default="train",
-        choices=("train", "val", "test"),
-        help=("Which split the --curriculum-spec writes to.  Train uses "
-                  "a flat output directory; val/test use per-level subdirs."),
+        choices=("train", "val", "test", "train_l0_l4"),
+        help=("Which split the --curriculum-spec writes to.  ``train`` and "
+                  "``train_l0_l4`` use a flat output directory; val/test use "
+                  "per-level subdirs.  ``train_l0_l4`` pairs with the curriculum "
+                  "spec of the same name (no L5) — used so the OOD train "
+                  "dataset lands at <output_dir>/train_l0_l4/ without "
+                  "overwriting the in-distribution <output_dir>/train/."),
     )
     parser.add_argument(
         "--level", type=int, default=None, choices=list(range(6)),
