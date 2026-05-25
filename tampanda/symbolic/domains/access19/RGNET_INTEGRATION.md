@@ -98,13 +98,25 @@ trust that instinct — skip it.
 
 ## Dataset location
 
-* In the tampanda repo: `data/access19/`
-  * `domain.pddl` — symlink target / canonical domain file
-  * `{train,val,test}/L{0,1,2,3,4}/config_NNN.pddl`
-  * `{train,val,test}/L{0,1,2,3,4}/config_NNN.pddl.plan` — solver-style
-    plan (one `(action arg1 arg2 ...)` per line)
-* 120 train + 30 val + 30 test = 180 instances total.
-* Mix: 16/24/32/32/16 across L0–L4 in train.
+Two datasets ship; see `DESIGN.md` for the full table.
+
+**`data/access19_v2/`** — the **primary training target** (Option-B + generalisation eval).  Flat dirs, no `L<level>/` subdirs (level lives in plan metadata).
+
+```
+data/access19_v2/
+├── domain.pddl
+├── train/        300 instances, ≤ 12 blockers (Option-B, L4 = canonical_12)
+├── val/           50 instances, same dist (mid-training validation)
+├── eval_pre_b/    30 instances, original (L4 = canonical_18)
+└── eval_full/     30 instances, all canonical_18 + return-all
+```
+
+Three eval surfaces:
+- `val/` — same distribution as train; for mid-training validation.
+- `eval_pre_b/` — pre-Option-B distribution (L4 = full canonical_18).  Tests "does the Option-B-trained model handle 18-blocker layouts at mixed difficulty?"
+- `eval_full/` — strict generalisation: 30 instances of the full canonical Bouhsain HAL 2025 problem (canonical_18 + return-all).  Tests "does it solve the full thing?"
+
+**`data/access19/`** — v1 dataset (original 180-instance), kept for backward compatibility.  Has `L<level>/` subdirs.  Use only if you have prior code paths that assume that layout.
 
 Plans were generated using the `phased_plan` planner for L4 and
 `astar_plan` for the rest.  Plan lengths: L0 ≈ 2–4, L1 ≈ 6, L2–L3 ≈

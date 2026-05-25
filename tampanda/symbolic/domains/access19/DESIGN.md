@@ -170,7 +170,58 @@ pool.  Each worker builds env + chains once at startup.  Compact
 `(layout, held, action)` payloads sent per check.  Used by the
 data-gen pipeline's `--num-workers` flag.
 
-## Data generation
+## Datasets
+
+Two dataset layouts are shipped:
+
+### v1 — `data/access19/` (original, kept for backward compatibility)
+
+The original 180-instance dataset.  Train uses the full curriculum
+with canonical_18 at L4 (18-blocker return-all).  Layout:
+
+```
+data/access19/
+├── domain.pddl
+├── train/L0..L4/  120 instances
+├── val/L0..L4/    30 instances
+└── test/L0..L4/   30 instances
+```
+
+### v2 — `data/access19_v2/` (Option-B + generalisation evals)
+
+Designed for "train on max-12 blockers, test generalisation to 18".
+Four datasets in one bundle, all output dirs **flat** (no `L<level>/`
+subdirs — level is recorded in plan-file metadata only).
+
+```
+data/access19_v2/
+├── domain.pddl
+├── train/         300 instances, max 12 blockers (Option-B)
+├── val/            50 instances, same distribution as train
+├── eval_pre_b/     30 instances, original (canonical_18 at L4)
+└── eval_full/      30 instances, all canonical_18 + return-all
+```
+
+The four sets in detail:
+
+| Subset | Count | L4 template | Purpose |
+|--|--:|--|--|
+| `train/` | 300 (40+60+80+80+40) | `canonical_12` | training |
+| `val/` | 50 (10/level) | `canonical_12` | mid-training validation |
+| `eval_pre_b/` | 30 (6/level) | `canonical_18` | "does Option-B model handle 18-blocker mixed-difficulty?" |
+| `eval_full/` | 30 | `canonical_18` only | "does Option-B model solve the canonical Bouhsain HAL 2025 problem?" |
+
+`canonical_12` = `dense_front(4)`: 12 blockers in front 4 rows × 3
+columns + OoI at back.  Plan length: ~26-30 actions.
+
+Generate the v2 bundle in one shot:
+```bash
+python -m tampanda.symbolic.domains.access19.generate_data \
+    --bundle-v2 --num-workers 4 --time-budget 300 \
+    --output-dir data/access19_v2
+```
+
+## Data generation (per-domain mechanics)
 
 `generate_data.py` mirrors `multilevel_blocks/generate_data.py`:
 

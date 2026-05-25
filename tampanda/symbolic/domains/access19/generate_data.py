@@ -65,6 +65,7 @@ from tampanda.symbolic.domains.access19.reachability import (
 )
 from tampanda.symbolic.domains.access19.templates import (
     Template,
+    canonical_12,
     canonical_18,
     dense_front,
     front_row_subset,
@@ -103,6 +104,13 @@ _LEVEL_TEMPLATE_NAMES: Dict[int, List[str]] = {
     4: ["canonical_18"],         # 18 blockers, return=True (uses phased)
 }
 
+# Per-curriculum L4 template override.  Used by the v2 bundle to swap
+# in ``canonical_12`` (Option-B training) while keeping the held-out
+# evals at the original ``canonical_18`` distribution.
+_L4_TEMPLATE_OVERRIDE: Dict[str, List[str]] = {
+    # default: use the module-level _LEVEL_TEMPLATE_NAMES[4]
+}
+
 # Planner choice per level — see CLAUDE.md for the agreement that
 # trivial L0/L1 use oracle (fastest), middle levels use A* with the
 # smart heuristic, L4 uses the phased hybrid.
@@ -114,11 +122,23 @@ _LEVEL_PLANNER: Dict[int, str] = {
     4: "phased",
 }
 
-# Curriculum-spec presets — modest counts for the first cut.
+# Curriculum-spec presets.
 _CURRICULA: Dict[str, List[Tuple[int, int]]] = {
     "train_120": [(0, 16), (1, 24), (2, 32), (3, 32), (4, 16)],
     "val_per_level": [(k, 6) for k in range(5)],
     "test_per_level": [(k, 6) for k in range(5)],
+    # Option-B (max-12-blocker) training distribution.  L4 = canonical_12.
+    "train_300_option_b": [(0, 40), (1, 60), (2, 80), (3, 80), (4, 40)],
+    "val_50_option_b":    [(0, 10), (1, 10), (2, 10), (3, 10), (4, 10)],
+    # Held-out evals.
+    "eval_30_pre_b":      [(k, 6) for k in range(5)],
+    "eval_30_full_a19":   [(4, 30)],
+}
+_L4_TEMPLATE_OVERRIDE = {
+    "train_300_option_b":  ["canonical_12"],
+    "val_50_option_b":     ["canonical_12"],
+    "eval_30_pre_b":       ["canonical_18"],
+    "eval_30_full_a19":    ["canonical_18"],
 }
 
 
@@ -333,13 +353,21 @@ def _sample_template(
     rng: np.random.Generator,
     *,
     level: int,
+    curriculum_spec: Optional[str] = None,
 ) -> Template:
     """Sample a template suited to the given curriculum level.
 
-    Always selects from ``_LEVEL_TEMPLATE_NAMES[level]``.  Applies a
-    random mirror_x with prob=0.5 for variant multiplication.
+    Selects from ``_LEVEL_TEMPLATE_NAMES[level]``, with a per-
+    curriculum override for L4 (used by the v2 bundle to swap
+    ``canonical_18`` ↔ ``canonical_12``).  Applies a random mirror_x
+    with prob=0.5 for variant multiplication.
     """
-    name = str(rng.choice(_LEVEL_TEMPLATE_NAMES[level]))
+    if (level == 4 and curriculum_spec is not None
+            and curriculum_spec in _L4_TEMPLATE_OVERRIDE):
+        names = _L4_TEMPLATE_OVERRIDE[curriculum_spec]
+    else:
+        names = _LEVEL_TEMPLATE_NAMES[level]
+    name = str(rng.choice(names))
     return_blockers = level >= 2
 
     if name == "front_row_subset":
@@ -356,6 +384,8 @@ def _sample_template(
         tpl = gotcha_corridor_jam(rng, return_blockers=True)
     elif name == "canonical_18":
         tpl = canonical_18(return_blockers=True)
+    elif name == "canonical_12":
+        tpl = canonical_12(return_blockers=True)
     else:
         raise ValueError(f"unknown template name {name!r}")
 
@@ -383,9 +413,11 @@ def _generate_one(
     *,
     level: int,
     level_subdir: Optional[str] = None,
+    curriculum_spec: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Generate a single access-19 instance for the given curriculum level."""
-    template = _sample_template(rng, level=level)
+    template = _sample_template(rng, level=level,
+                                        curriculum_spec=curriculum_spec)
     planner_kind = _LEVEL_PLANNER[level]
 
     plan, info = build_plan(
@@ -469,6 +501,7 @@ def _generate_split(
     level: int,
     level_subdir: Optional[str] = None,
     config_offset: int = 0,
+    curriculum_spec: Optional[str] = None,
 ) -> dict:
     """Single-process split runner."""
     if count <= 0:
@@ -491,6 +524,7 @@ def _generate_split(
                     executor, pick_fn, put_fn, shelf_home,
                     output_base, split,
                     level=level, level_subdir=level_subdir,
+                    curriculum_spec=curriculum_spec,
                 )
             except Exception as exc:
                 stats["reject_plan_failed"] += 1
@@ -525,7 +559,9 @@ def _generate_split(
 def _worker(worker_id: int, split: str, start_idx: int, count: int,
                  args, output_base_str: str, seed: int,
                  level: int,
-                 level_subdir: Optional[str] = None) -> Tuple[dict, list]:
+                 level_subdir: Optional[str] = None,
+                 curriculum_spec: Optional[str] = None,
+                 ) -> Tuple[dict, list]:
     """One worker process: generates ``count`` instances at the given level."""
     rng = np.random.default_rng(seed + worker_id * 9999)
     output_base = Path(output_base_str)
@@ -544,6 +580,7 @@ def _worker(worker_id: int, split: str, start_idx: int, count: int,
                     pick_fn, put_fn, shelf_home,
                     output_base, split,
                     level=level, level_subdir=level_subdir,
+                    curriculum_spec=curriculum_spec,
                 )
             except Exception:
                 stats["reject_plan_failed"] += 1
@@ -566,12 +603,14 @@ def _generate_split_parallel(
     level: int,
     level_subdir: Optional[str] = None,
     config_offset: int = 0,
+    curriculum_spec: Optional[str] = None,
 ) -> dict:
     """Distribute the split across ``args.num_workers`` workers."""
     if args.num_workers <= 1:
         return _generate_split(split, count, args, output_base, seed,
                                        level=level, level_subdir=level_subdir,
-                                       config_offset=config_offset)
+                                       config_offset=config_offset,
+                                       curriculum_spec=curriculum_spec)
 
     counts = [count // args.num_workers] * args.num_workers
     for i in range(count % args.num_workers):
@@ -587,7 +626,7 @@ def _generate_split_parallel(
                 continue
             args_tuple = (wid, split, start_idxs[wid], counts[wid],
                               args, str(output_base), seed,
-                              level, level_subdir)
+                              level, level_subdir, curriculum_spec)
             futures.append(pool.apply_async(_worker, args_tuple))
         worker_results = [fut.get() for fut in futures]
 
@@ -630,21 +669,28 @@ def _run_curriculum(
     args,
     output_base: Path,
     seed: int,
+    *,
+    flat: bool = False,
+    curriculum_spec: Optional[str] = None,
 ) -> dict:
     """Run a curriculum spec — list of ``(level, count)`` tuples.
 
-    Each level's instances go to ``<output_base>/<split>/L<level>/``.
+    By default each level's instances go to
+    ``<output_base>/<split>/L<level>/``.  If ``flat=True``, all
+    instances go to ``<output_base>/<split>/`` (collapsed; level
+    still recorded in the plan-file metadata).
     """
     overall = _init_stats()
     t_start = time.time()
     offset_per_level = 0
     for level, count in spec:
         print(f"\n[curriculum] {split} L{level}: {count} instances")
-        level_subdir = f"L{level}"
+        level_subdir = None if flat else f"L{level}"
         stats = _generate_split_parallel(
             split, count, args, output_base, seed + level * 7,
             level=level, level_subdir=level_subdir,
             config_offset=offset_per_level,
+            curriculum_spec=curriculum_spec,
         )
         overall["attempts"] += stats["attempts"]
         overall["accepted"] += stats["accepted"]
@@ -695,6 +741,11 @@ def main() -> int:
                                    "dispatch across processes)")
     p.add_argument("--no-domain-copy", action="store_true",
                           help="don't copy domain.pddl to output_dir")
+    p.add_argument("--bundle-v2", action="store_true",
+                          help="generate the v2 4-dataset bundle "
+                                   "(train+val Option-B, eval_pre_b, "
+                                   "eval_full).  Output dirs are flat "
+                                   "(no L<level>/ subdirs).")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -719,7 +770,8 @@ def main() -> int:
     # Curriculum-spec mode.
     if args.curriculum_spec is not None:
         spec = _CURRICULA[args.curriculum_spec]
-        _run_curriculum("train", spec, args, args.output_dir, args.seed)
+        _run_curriculum("train", spec, args, args.output_dir, args.seed,
+                                curriculum_spec=args.curriculum_spec)
         if args.num_val > 0:
             _run_curriculum("val", _CURRICULA["val_per_level"],
                                   args, args.output_dir, args.seed + 100)
@@ -728,7 +780,31 @@ def main() -> int:
                                   args, args.output_dir, args.seed + 200)
         return 0
 
-    print("Specify --curriculum-spec or (--level + --num).", flush=True)
+    # V2 bundle mode — 4 datasets in one shot, flat output dirs.
+    if args.bundle_v2:
+        # train + val: Option-B distribution (L4 = canonical_12).
+        _run_curriculum("train", _CURRICULA["train_300_option_b"],
+                                args, args.output_dir, args.seed,
+                                flat=True,
+                                curriculum_spec="train_300_option_b")
+        _run_curriculum("val", _CURRICULA["val_50_option_b"],
+                                args, args.output_dir, args.seed + 100,
+                                flat=True,
+                                curriculum_spec="val_50_option_b")
+        # eval_pre_b: original curriculum with canonical_18 at L4.
+        _run_curriculum("eval_pre_b", _CURRICULA["eval_30_pre_b"],
+                                args, args.output_dir, args.seed + 200,
+                                flat=True,
+                                curriculum_spec="eval_30_pre_b")
+        # eval_full: 30 canonical_18 + return-all (L4 only).
+        _run_curriculum("eval_full", _CURRICULA["eval_30_full_a19"],
+                                args, args.output_dir, args.seed + 300,
+                                flat=True,
+                                curriculum_spec="eval_30_full_a19")
+        return 0
+
+    print("Specify --curriculum-spec, --bundle-v2, or (--level + --num).",
+              flush=True)
     return 2
 
 

@@ -208,6 +208,29 @@ def canonical_18(
                               ooi_cell=ooi_cell, ooi_goal=ooi_goal)
 
 
+def canonical_12(
+    *,
+    return_blockers: bool = True,
+    ooi_cell: str = _OOI_BACK_CELLS[1],
+    ooi_goal: str = _OOI_DEFAULT_GOAL,
+) -> Template:
+    """12-blocker compact subset of ``canonical_18``.
+
+    Used for the **Option-B training distribution** — the trained
+    model sees layouts up to 12 blockers, and the held-out evals
+    test generalisation to the full 18-blocker layout.  Compact
+    dense block (front 4 rows × 3 cube columns) so the structure
+    mirrors a clean subset of canonical_18 without adversarial
+    placement variation.
+
+    Returns ``dense_front(4)`` under the hood.  Plan length with
+    ``return_blockers=True``: ~26-30 actions.
+    """
+    return dense_front(4, np.random.default_rng(),
+                              return_blockers=return_blockers,
+                              ooi_cell=ooi_cell, ooi_goal=ooi_goal)
+
+
 def gotcha_corridor_jam(
     rng: np.random.Generator, *,
     return_blockers: bool = True,
