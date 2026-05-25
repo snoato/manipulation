@@ -839,6 +839,83 @@ class MultilevelBlocksExecutor:
             self.env.data.qvel[:] = save_v
             mujoco.mj_forward(self.env.model, self.env.data)
 
+    def _seeded_lerp_check(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        n_substeps: int,
+        max_iters: int,
+        seed_arm_q: Optional[np.ndarray] = None,
+        lut_cell_id: Optional[str] = None,
+        lut_family: Optional[str] = None,
+    ) -> Optional[Tuple[List[np.ndarray], np.ndarray]]:
+        """LUT-aware joint-lerp probe used by pick_upright phases.
+
+        Mirrors :meth:`tampanda.planners.linear_ik.LinearIKPlanner.plan_joint_lerp`
+        but pre-seeds mink with either an explicit ``seed_arm_q`` or the LUT
+        entry for ``(lut_cell_id, lut_family, target_quat)``, then runs
+        ``converge_ik`` with a tight ``max_iters`` cap.  Builds the joint-
+        lerp path from the CURRENT arm config (not the seed) so executing
+        the returned path stays consistent with the simulator state.
+
+        LUT policy: when the LUT is loaded and a ``lut_cell_id`` is given,
+        a missing entry is treated as infeasible (returns None).  The
+        precompute had a 500-iter budget from HOME; if it didn't converge
+        there, runtime cold-IK won't converge either.
+
+        Returns ``(path, goal_q)`` on success, ``None`` on any failure
+        (IK non-convergence, goal collision, lerp collision).
+        """
+        # Choose the seed.
+        seed = seed_arm_q
+        if seed is None and lut_cell_id is not None:
+            if self._ik_seed_lut is None:
+                seed = None
+            elif not self._ik_seed_lut.has(lut_cell_id, lut_family,
+                                                 target_quat):
+                return None
+            else:
+                seed = self._ik_seed_lut.lookup(
+                    lut_cell_id, lut_family, target_quat,
+                )
+
+        qpos_save = self.env.data.qpos.copy()
+        qvel_save = self.env.data.qvel.copy()
+        saved_iters = self.env.ik.max_iters
+        try:
+            if seed is not None:
+                self.env.data.qpos[:7] = seed
+                self.env.data.qvel[:] = 0.0
+                mujoco.mj_forward(self.env.model, self.env.data)
+            self.env.ik.update_configuration(self.env.data.qpos)
+            self.env.ik.set_target_position(target_pos, target_quat)
+            self.env.ik.max_iters = max_iters
+            if not self.env.ik.converge_ik(0.005):
+                return None
+            goal_q = self.env.ik.configuration.q[:7].copy()
+        finally:
+            self.env.ik.max_iters = saved_iters
+            self.env.data.qpos[:] = qpos_save
+            self.env.data.qvel[:] = qvel_save
+            mujoco.mj_forward(self.env.model, self.env.data)
+
+        # Path starts from the REAL current arm config; goal_q is the
+        # seeded-IK solution.
+        start_q = self.env.data.qpos[:7].copy()
+        if not self.env.is_collision_free(goal_q):
+            return None
+        for j in range(1, n_substeps + 1):
+            alpha = j / n_substeps
+            q_mid = (1 - alpha) * start_q + alpha * goal_q
+            if not self.env.is_collision_free(q_mid):
+                return None
+
+        path: List[np.ndarray] = [start_q.copy()]
+        for k in range(1, n_substeps + 1):
+            alpha = k / n_substeps
+            path.append((1 - alpha) * start_q + alpha * goal_q)
+        return path, goal_q
+
     def _return_after_pickput(self, region: str,
                                   used_quat: np.ndarray) -> None:
         """Post-action return: handoff in the given region's orientation,
@@ -1044,7 +1121,13 @@ class MultilevelBlocksExecutor:
 
         Grasps the upper half of the block; EE attachment site at the
         midpoint of c_high.  Tries 4 grasp yaws (the upright block's
-        4-fold lateral symmetry)."""
+        4-fold lateral symmetry).
+
+        Phase 3.7: each phase consults the IK seed LUT keyed by
+        (c_high_id, "upright", q) — the anchor target IS the cell pose
+        of c_high, so LUT-seeded IK converges in 0-3 iters.  Same
+        skip-uncached / tier-skip / cached-goal_q pattern as put_upright.
+        """
         p_low = self._cell_pose(c_low_id)
         p_high = self._cell_pose(c_high_id)
         cube_centre_high = p_high
@@ -1061,23 +1144,32 @@ class MultilevelBlocksExecutor:
             mujoco.mj_forward(self.env.model, self.env.data)
             self.env.ik.update_configuration(self.env.data.qpos)
 
-            # Filter quats by IK at the grasp anchor (most-constrained
-            # pose).  The natural yaw differs per region — for stack
-            # (block at +y of base) yaw=0 is front-approach; for parts
-            # (block at -y) yaw=π is front-approach.  The sorted variant
-            # tries the natural yaw first based on block xy, so when
-            # only 1-2 of 8 quats IK-converge we find it on the first
-            # probe instead of trying all 8.
-            # pick_upright probes are cheap (single plan_joint_lerp per
-            # quat, no Cartesian substeps, no IK-only fallback), so the
-            # full 8 yaws cost only ~800 ms.  Keep all 8 — bench showed
-            # 2 cases at (3,3) anchors need yaws in positions 5-8.  The
-            # put_upright filter (below, with 3 tiers per quat) is the
-            # actual slow path; it's the one that needs the top-K cap.
             candidate_quats = _upright_grasp_quats_sorted(anchor)
-            filtered_quats = [q for q in candidate_quats
-                                  if self.lik.plan_joint_lerp(
-                                          anchor, q, n_substeps=10) is not None]
+
+            # ---- Phase A: anchor filter ----
+            # The anchor IS ws.pose_for(c_high) — an exact LUT target.
+            # LUT path: cached probes converge in 0-3 iters; uncached
+            # are rejected (precompute had 500-iter HOME budget — runtime
+            # can't do better with a cold seed).  No-LUT path: full
+            # cold-IK plan_joint_lerp (original behaviour).
+            lut_loaded = self._ik_seed_lut is not None
+            filtered_quats: List[np.ndarray] = []
+            anchor_goal_q: Dict[Tuple, np.ndarray] = {}
+            for q in candidate_quats:
+                if lut_loaded:
+                    res = self._seeded_lerp_check(
+                        anchor, q, n_substeps=10, max_iters=15,
+                        lut_cell_id=c_high_id, lut_family="upright",
+                    )
+                    goal_q = res[1] if res is not None else None
+                else:
+                    path0 = self.lik.plan_joint_lerp(
+                        anchor, q, n_substeps=10,
+                    )
+                    goal_q = path0[-1][:7].copy() if path0 is not None else None
+                if goal_q is not None:
+                    filtered_quats.append(q)
+                    anchor_goal_q[tuple(np.round(q, 6).tolist())] = goal_q
             if not filtered_quats:
                 self._err(
                     f"pick_upright {block_name}: no quat reaches grasp anchor  "
@@ -1086,21 +1178,24 @@ class MultilevelBlocksExecutor:
                 )
                 return False
 
-            # Per-quat approach: the gripper approaches from the OPPOSITE
-            # direction of its palm (gripper z-axis).  Hardcoding the
-            # approach as a fixed y-offset only worked when yaw was 0 (or
-            # π for parts); side yaws (π/2, 3π/2) put the gripper on the
-            # WRONG side of the block, and the approach-to-anchor descent
-            # then swept the gripper INTO the block, kicking it over.
+            # ---- Phase B: approach per yaw (seeded from anchor_goal_q) ----
+            # Approach is ~10 cm offset along the gripper z-axis at the
+            # same yaw — anchor_goal_q is an excellent seed.  Cap at 50
+            # iters; cold-IK from HOME takes 200+ here, mink with the
+            # cell-local seed converges in 10-30.
             used_quat = None
             approach = None
             path = None
             for q in filtered_quats:
                 gz_world = _gripper_z_world(q)
                 cand_approach = anchor - gz_world * _APPROACH_HEIGHT
-                p = self.lik.plan_joint_lerp(cand_approach, q, n_substeps=20)
-                if p is not None:
-                    path, used_quat, approach = p, q, cand_approach
+                qkey = tuple(np.round(q, 6).tolist())
+                p_res = self._seeded_lerp_check(
+                    cand_approach, q, n_substeps=20, max_iters=50,
+                    seed_arm_q=anchor_goal_q[qkey],
+                )
+                if p_res is not None:
+                    path, used_quat, approach = p_res[0], q, cand_approach
                     break
             if path is None:
                 self._err(
@@ -1115,7 +1210,23 @@ class MultilevelBlocksExecutor:
             self._preclose_for_descent()
             self.env.ik.update_configuration(self.env.data.qpos)
 
-            res = self._try_plan_to_pose(anchor, [used_quat], n_substeps=10)
+            # ---- Phase C: descent ----
+            # We already have anchor_goal_q from Phase A.  In fast mode,
+            # build the joint-lerp directly from the post-approach config
+            # to the cached goal_q (skips plan_to_pose's Cartesian
+            # substep IK chain).  Real mode keeps the full path planner
+            # for execution fidelity.
+            used_qkey = tuple(np.round(used_quat, 6).tolist())
+            cached_goal = anchor_goal_q[used_qkey]
+            if self._fast_column_align_substeps_halved():
+                res = self._seeded_lerp_check(
+                    anchor, used_quat, n_substeps=10, max_iters=10,
+                    seed_arm_q=cached_goal,
+                )
+            else:
+                planned = self._try_plan_to_pose(anchor, [used_quat],
+                                                       n_substeps=10)
+                res = planned if planned is not None else None
             if res is None:
                 self._err(f"pick_upright {block_name}: descend IK failed")
                 return False
@@ -1123,8 +1234,15 @@ class MultilevelBlocksExecutor:
 
             self._close_attach(block_name)
 
+            # ---- Phase D: lift (seeded from descent goal_q) ----
             lift = anchor + np.array([0.0, 0.0, _LIFT_HEIGHT])
-            res = self._try_plan_to_pose(lift, [used_quat], n_substeps=10)
+            if self._fast_column_align_substeps_halved():
+                res = self._seeded_lerp_check(
+                    lift, used_quat, n_substeps=10, max_iters=50,
+                    seed_arm_q=cached_goal,
+                )
+            else:
+                res = self._try_plan_to_pose(lift, [used_quat], n_substeps=10)
             if res is not None:
                 self._execute(res[0], step_size=_STEP_LIFT, precision=True)
             return True
