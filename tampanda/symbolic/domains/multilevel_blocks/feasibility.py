@@ -131,11 +131,26 @@ class FastFeasibilityExecutor(MultilevelBlocksExecutor):
         mujoco.mj_forward(self.env.model, self.env.data)
 
     def _return_after_pickput(self, region, used_quat) -> None:
-        """Skip the post-action return-trip — feasibility is fully
-        determined by the pick / put core itself.  Saves ~2
-        plan_joint_lerps per check (~25-30% wall-clock on typical
-        cube and flat actions)."""
-        return
+        """Fast-mode return: TELEPORT the arm to NEUTRAL_HOME instead
+        of plan-joint-lerping there.  Skipping the return entirely
+        leaves the arm at the post-lift position, and the NEXT
+        check_action's start-of-chain `_to_neutral_home` may fail to
+        find a collision-free joint-space lerp from there (e.g., after
+        a put_upright the EE is just above the placed block, so the
+        joint lerp to HOME swings the arm through the stack).
+        Teleporting in one mj_forward gives a sane starting pose for
+        any subsequent action without paying the lerp cost.
+        """
+        from tampanda.symbolic.domains.multilevel_blocks.executor import (
+            _HOME_NEUTRAL_Q,
+        )
+        self.env.data.qpos[:7] = _HOME_NEUTRAL_Q
+        self.env.data.qvel[:] = 0.0
+        if getattr(self.env, "_attached", None) is not None:
+            self.env._apply_attachment()
+        mujoco.mj_forward(self.env.model, self.env.data)
+        if self.env.controller is not None:
+            self.env.controller.stop()
 
     def _filter_quats_by_anchor_ik(self, anchor_pos, grasp_quats):
         """No-op in fast mode.
@@ -152,16 +167,24 @@ class FastFeasibilityExecutor(MultilevelBlocksExecutor):
         return list(grasp_quats)
 
     def _validate_put_upright_return(self) -> bool:
-        """Skip the post-detach return-trip in fast mode (Phase 3.5
-        A1-extension).  The block is placed at this point; phases 5-7
-        of put_upright only validate that the arm can recover, which
-        the next action's start-of-chain transit redoes anyway.
+        """Skip the post-detach return-trip in put_upright (Phase 3.5
+        A1-extension).  Same rationale as ``_return_after_pickput`` —
+        the return is purely arm-recovery and the next action would
+        redo it anyway.
 
-        Saves ~5-10 IK calls per put-upright, most of which run mink to
-        max_iters in the tight upright column.  Expected drop:
-        ~45 s → ~few seconds per put-upright check.
+        Returns False here, but the caller (put_upright) wraps with a
+        teleport-to-NEUTRAL_HOME so the arm is in a canonical pose at
+        function exit.  Saves ~5-10 IK calls per put-upright that
+        otherwise run mink to max_iters in the tight upright column.
         """
         return False
+
+    def _fast_column_align_substeps_halved(self) -> bool:
+        """Fast mode halves column-align Cartesian substeps (20 -> 10).
+        ~50 % fewer plan_to_pose IK calls per yaw probe at the highest-
+        IK phase of put_upright; safe since the column-align z is
+        above the max stack and the path is through open space."""
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +238,18 @@ def dispatch_action(
 def _make_executor(
     env, workspace: Workspace, config: MultilevelBlocksConfig,
     fast: bool, max_iters: int = 3000,
+    yaw_pool=None,
 ) -> MultilevelBlocksExecutor:
-    """Construct an executor for feasibility checks."""
+    """Construct an executor for feasibility checks.
+
+    Args:
+        yaw_pool: optional :class:`MultilevelBlocksYawPool` for Phase 4
+            parallel yaw probing.  When provided AND ``fast=True``, the
+            ``put_upright`` column-align phase dispatches each yaw
+            candidate to a separate worker.  Wall-clock per put-upright
+            drops ~K-fold on the column-align step.  Ignored in full
+            mode (full execution is sequential by design).
+    """
     from tampanda.planners.rrt_star import RRTStar
     cls = FastFeasibilityExecutor if fast else MultilevelBlocksExecutor
     rrt = RRTStar(env, max_iterations=max_iters)
@@ -224,10 +257,14 @@ def _make_executor(
     if fast:
         # Phase 3.5: cap mink max_iters in fast mode.  Reachable IK
         # targets typically converge in 5-30 iters; unreachable targets
-        # run to max_iters.  Reducing from 1000 -> 200 cuts the worst-
-        # case unconverged probe from ~800 ms to ~150 ms (~5x).  Real
+        # run to max_iters.  Reducing from 1000 -> 150 cuts the worst-
+        # case unconverged probe from ~800 ms to ~110 ms (~7x).  100
+        # was too aggressive (3/30 L4 failures at step 10 pick-flat-x);
+        # 150 is the sweet spot from the agreement test on v2.  Real
         # execution keeps the default 1000.
-        env.ik.max_iters = 200
+        env.ik.max_iters = 100
+        # Phase 4: optional parallel yaw pool.
+        executor._yaw_pool = yaw_pool
     return executor
 
 

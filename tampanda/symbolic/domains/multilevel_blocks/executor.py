@@ -376,6 +376,12 @@ class MultilevelBlocksExecutor:
         except Exception:
             self._ik_seed_lut = None
 
+        # Phase 4: optional parallel yaw pool.  ``_make_executor`` in
+        # feasibility.py sets this when constructed with a pool; chain
+        # phases that loop over K grasp-yaw candidates dispatch to the
+        # pool when present.  None -> serial yaw probing (default).
+        self._yaw_pool = None
+
     def _trace_phase(self, label: str) -> None:
         """Append a trace entry if a block is currently held."""
         if self._held_block is None:
@@ -754,21 +760,32 @@ class MultilevelBlocksExecutor:
         return path
 
     def _seed_arm_for_cell(self, cell_id: str, family: str,
-                                 quat: np.ndarray) -> bool:
-        """Seed env.data.qpos[:7] with the cached IK config for the
-        (cell, family, quat) triple, then mj_forward + update mink.
+                                 quat: np.ndarray,
+                                 fallback_quats: Optional[
+                                     Sequence[np.ndarray]] = None,
+                                 ) -> bool:
+        """Seed env.data.qpos[:7] with a cached IK config for the
+        (cell, family) target, then mj_forward + update mink.
 
-        Returns True on cache hit, False on miss (caller proceeds with
-        current arm config).  Idempotent — calling multiple times with
-        different (cell, quat) just re-seeds.
+        Lookup order: first try the exact (cell, family, quat) triple;
+        on miss, try any quat in ``fallback_quats`` (if given) in order;
+        on full miss, return False (caller proceeds with current arm
+        config).
 
-        The LUT is built by ``examples/precompute_ik_seeds.py`` and
-        loaded once at executor init.  When absent, this is a cheap
-        no-op and the chain runs cold-start IK as before.
+        The fallback exists because the precompute filters out IK
+        targets that didn't converge — so SOME (cell, quat) pairs miss
+        but OTHER quats at the same cell hit.  Any cached arm config
+        near the cell helps mink converge subsequent IK probes far
+        more than the handoff seed does.
         """
         if self._ik_seed_lut is None:
             return False
         arm_q = self._ik_seed_lut.lookup(cell_id, family, quat)
+        if arm_q is None and fallback_quats is not None:
+            for q in fallback_quats:
+                arm_q = self._ik_seed_lut.lookup(cell_id, family, q)
+                if arm_q is not None:
+                    break
         if arm_q is None:
             return False
         self.env.data.qpos[:7] = arm_q
@@ -834,6 +851,12 @@ class MultilevelBlocksExecutor:
         """
         self._to_handoff(region, used_quat)
         self._to_neutral_home()
+
+    def _fast_column_align_substeps_halved(self) -> bool:
+        """In fast mode we halve column-align Cartesian substeps from
+        20 -> 10 (no execution arc, just IK + collision coverage).
+        Overridden by FastFeasibilityExecutor to return True."""
+        return False
 
     def _validate_put_upright_return(self) -> bool:
         """Whether to validate post-detach return phases (lift-back,
@@ -1316,13 +1339,15 @@ class MultilevelBlocksExecutor:
             self._err(f"put_upright {block_name}: handoff failed")
             return False
 
-        # Phase 3.5 step 4: seed mink with the cached arm config for
-        # this target cell × FRONT_Y orientation BEFORE the slow IK
-        # phases (column-align preview, final descent).  With a good
-        # seed mink converges in 10-30 iters; without, it runs the
-        # ~200-iter cap and the phase costs ~150-200 ms per IK probe.
-        # No-op when the LUT is absent.
-        self._seed_arm_for_cell(c_low_id, "upright", _QUAT_FRONT_Y)
+        # NOTE (Phase 3.5 step 4): tried seeding the arm with the
+        # cached (cell, upright, FRONT_Y) config here.  Made things
+        # WORSE — the chain's first IK target after handoff is the
+        # settle-to-traverse pose at (handoff_xy, traverse_z), which
+        # is far from the cell_centre seed.  Mink then can't converge
+        # in 200 iters and the chain bails at settle.  The cached LUT
+        # would be useful for column-align / descent phases (after the
+        # arm is over the target column), but applying it there is a
+        # bigger refactor.  Leaving the LUT loaded for future use.
         self._trace_phase("put-upright:at-stack-handoff")
         self.env.ik.update_configuration(self.env.data.qpos)
 
@@ -1383,6 +1408,11 @@ class MultilevelBlocksExecutor:
         # preserved by the list comprehension, so yaw=0 (front approach)
         # is used whenever globally feasible; side/back yaws are only a
         # fallback.
+        # Cache goal_q for each (yaw, label) so the column-align
+        # execution below can skip its own plan_to_pose IK and just
+        # teleport (in fast mode) — the IK was already done by Tier 0.
+        probe_goal_q: Dict[Tuple[int, str], np.ndarray] = {}
+
         def _probe(pos: np.ndarray, q: np.ndarray,
                        label: str, yaw_idx: int) -> bool:
             # Tier 0: cheap IK gate.  If bare IK can't even converge at
@@ -1392,13 +1422,55 @@ class MultilevelBlocksExecutor:
             # tends to fail every substep too).  Skipping the Cartesian
             # tier on IK-failed quats is the biggest wall-clock win on
             # the INFEAS put_upright slow path (~5x per failed quat).
+            #
+            # Phase 3.6: when the IK seed LUT has a cached arm_q for
+            # (c_low_id, "upright", q), seed mink with it and converge
+            # with a tight 15-iter cap.  Empirically (see
+            # examples/multilevel_blocks_lut_seed_test.py) cached probes
+            # converge in 3-5 iters at column_align_preview and 1-2 at
+            # final_descent_preview, so 15 is well above the worst case
+            # while rejecting genuinely-infeasible (cell, yaw, z) combos
+            # at the same rate as the cold-seeded 100-iter probe.
             qpos_save = self.env.data.qpos.copy()
             qvel_save = self.env.data.qvel.copy()
+            saved_iters = self.env.ik.max_iters
+            tier0_goal_q = None    # captured when Tier 0 succeeds — lets
+                                       # Tier 1 below skip its own IK call.
             try:
-                self.env.ik.update_configuration(self.env.data.qpos)
-                self.env.ik.set_target_position(pos, q)
-                ik_ok = self.env.ik.converge_ik(0.005)
+                lut = self._ik_seed_lut
+                if lut is not None:
+                    if lut.has(c_low_id, "upright", q):
+                        # LUT hit: seed + 15-iter converge.
+                        arm_q = lut.lookup(c_low_id, "upright", q)
+                        self.env.data.qpos[:7] = arm_q
+                        self.env.data.qvel[:] = 0.0
+                        mujoco.mj_forward(self.env.model, self.env.data)
+                        self.env.ik.update_configuration(self.env.data.qpos)
+                        self.env.ik.set_target_position(pos, q)
+                        self.env.ik.max_iters = 15
+                        ik_ok = self.env.ik.converge_ik(0.005)
+                    else:
+                        # LUT exists but this (cell, yaw) isn't cached.
+                        # Precompute ran with max_iters=500 from a HOME
+                        # seed and rejected this combination — treat it
+                        # as infeasible without re-probing.  Saves the
+                        # cold-IK cap-hit cost (~90 ms × 2 missing yaws
+                        # per put_upright at typical cells).
+                        ik_ok = False
+                else:
+                    # No LUT available: standard Tier 0 with a tight
+                    # 30-iter cap.  Median cold-IK converges in 11 iters
+                    # so cap=30 covers ~94% of feasible cases.
+                    self.env.ik.update_configuration(self.env.data.qpos)
+                    self.env.ik.set_target_position(pos, q)
+                    self.env.ik.max_iters = 30
+                    ik_ok = self.env.ik.converge_ik(0.005)
+                if ik_ok:
+                    tier0_goal_q = self.env.ik.configuration.q[:7].copy()
+                    qkey = tuple(np.round(q, 6).tolist())
+                    probe_goal_q[(qkey, label)] = tier0_goal_q
             finally:
+                self.env.ik.max_iters = saved_iters
                 self.env.data.qpos[:] = qpos_save
                 self.env.data.qvel[:] = qvel_save
                 mujoco.mj_forward(self.env.model, self.env.data)
@@ -1407,10 +1479,21 @@ class MultilevelBlocksExecutor:
                     print(f"    [filter] yaw{yaw_idx} {label}: "
                               f"IK gate rejected (skipping Cartesian probe)")
                 return False
-            # Tier 1: joint-lerp (cheap + full check including collision).
-            jl = self.lik.plan_joint_lerp(pos, q, n_substeps=10)
-            if jl is not None:
-                return True
+            # Tier 1: joint-lerp with the goal_q we ALREADY have from
+            # Tier 0 — skip plan_joint_lerp's internal IK call.  Just
+            # collision-check the goal and the joint-space midpoints.
+            # Saves ~50 ms per yaw probe across the K-yaw filter.
+            start_q = self.env.data.qpos[:7].copy()
+            if self.env.is_collision_free(tier0_goal_q):
+                jl_clean = True
+                for j in range(1, 11):
+                    alpha = j / 10.0
+                    q_mid = (1 - alpha) * start_q + alpha * tier0_goal_q
+                    if not self.env.is_collision_free(q_mid):
+                        jl_clean = False
+                        break
+                if jl_clean:
+                    return True
             # Tier 2: Cartesian-substep (also full check).  Only reached
             # if Tier 0 passed (IK converges) and Tier 1 failed (lerp
             # path has a collision).
@@ -1462,18 +1545,55 @@ class MultilevelBlocksExecutor:
         # line.  Falls back to joint-space lerp if Cartesian-substep
         # IK can't converge (rare at this altitude + constant
         # orientation).
+        # Per-yaw substep count.  Fast mode halves it (10 vs 20) — no
+        # execution arc to validate, just IK convergence + per-substep
+        # collision.  The column-align move is at traverse_z (above the
+        # max stack) so the path passes through open space; 10 substeps
+        # is plenty for collision coverage there.
+        ca_substeps = 10 if self._fast_column_align_substeps_halved() else 20
+
+        # Phase 4: when a yaw pool is attached (fast mode + rgnet),
+        # dispatch the K-yaw column-align in parallel.  Each worker
+        # runs plan_to_pose for ONE quat; the first success wins.
+        # Wall-clock drops from K × per_probe to ~per_probe.
+        # The path comes back from the worker but the MAIN env's arm
+        # hasn't moved; downstream self._execute(path, ...) below
+        # applies it.
         path = None
         used_quat = None
-        for q in filtered_quats:
-            path = self.lik.plan_to_pose(column_align_preview, q,
-                                              slerp_orientation=False,
-                                              n_substeps=20)
-            if path is not None:
-                used_quat = q
-                break
+        if self._yaw_pool is not None and len(filtered_quats) > 1:
+            arm_qpos = self.env.data.qpos[:7].copy()
+            res = self._yaw_pool.first_success_plan(
+                arm_qpos, column_align_preview,
+                filtered_quats, n_substeps=ca_substeps,
+                slerp_orientation=False,
+            )
+            if res is not None:
+                path, used_quat = res
+        if path is None:
+            for q in filtered_quats:
+                # Phase 3.7: in fast mode, reuse the goal_q we already
+                # computed in _probe instead of running plan_to_pose's
+                # Cartesian-substep IK (10 calls × ~33 ms = ~330 ms
+                # eliminated per column-align).  Tier 1's collision
+                # check already validated the joint-lerp to this goal_q,
+                # so teleporting straight there is sound.
+                qkey = tuple(np.round(q, 6).tolist())
+                cached = probe_goal_q.get((qkey, "col-align"))
+                if (cached is not None
+                        and self._fast_column_align_substeps_halved()):
+                    path = [self.env.data.qpos[:7].copy(), cached]
+                    used_quat = q
+                    break
+                path = self.lik.plan_to_pose(column_align_preview, q,
+                                                  slerp_orientation=False,
+                                                  n_substeps=ca_substeps)
+                if path is not None:
+                    used_quat = q
+                    break
         if path is None:
             res = self._try_plan_to_pose(column_align_preview, filtered_quats,
-                                              n_substeps=20)
+                                              n_substeps=ca_substeps)
             if res is None:
                 self._err(
                     f"put_upright {block_name}: column-align IK failed  "
@@ -1492,10 +1612,15 @@ class MultilevelBlocksExecutor:
         held_off = self._held_offset.copy()
 
         # 3. Final descent — short vertical drop at the target column.
+        # Fast mode halves substeps (14 -> 7); the descent is pure -z
+        # along the target column, no contact until detach, so coarser
+        # substepping is collision-safe.
+        fd_substeps = 7 if self._fast_column_align_substeps_halved() else 14
         place_pose = np.array([anchor[0] - held_off[0],
                                   anchor[1] - held_off[1],
                                   ee_z])
-        res = self._try_plan_to_pose(place_pose, [used_quat], n_substeps=14)
+        res = self._try_plan_to_pose(place_pose, [used_quat],
+                                              n_substeps=fd_substeps)
         if res is None:
             ee_now = self.env.data.site_xpos[self.ee_site_id].copy()
             self._err(
@@ -1508,13 +1633,17 @@ class MultilevelBlocksExecutor:
             return False
         self._execute(res[0], step_size=_STEP_PLACE, precision=True)
 
-        # 3b. Re-measure post-descent offset + nudge if drifted.
+        # 3b. Re-measure post-descent offset + nudge if drifted.  In
+        # fast mode skip the nudge entirely — the held offset on a
+        # kinematic attach is deterministic by construction (no physics
+        # drift), so the corrected pose equals place_pose to ~1e-6.
         self._refresh_held_offset()
         held_off = self._held_offset.copy()
         corrected = np.array([anchor[0] - held_off[0],
                                  anchor[1] - held_off[1],
                                  ee_z])
-        if np.linalg.norm(corrected - place_pose) > 0.003:
+        if (not self._fast_column_align_substeps_halved()
+                  and np.linalg.norm(corrected - place_pose) > 0.003):
             res = self._try_plan_to_pose(corrected, [used_quat],
                                               n_substeps=8)
             if res is not None:
@@ -1528,14 +1657,21 @@ class MultilevelBlocksExecutor:
         self._log_phase(f"put-upright/{block_name}/post-detach", place_pose,
                           block_name=block_name)
 
-        # A1 extension: short-circuit the return-trip in fast mode.  Once
-        # detach is done the put is locked in; phases 5-7 only validate
-        # arm-recovery which the next action redoes anyway.  Skipping
-        # them is the dominant put-upright fast-mode speedup (~5-10 IK
-        # calls each running mink to max_iters in the tight upright
-        # column).
+        # A1 extension: short-circuit the return-trip in fast mode.
+        # Once detach is done the put is locked in; phases 5-7 only
+        # validate arm-recovery.  Instead of skipping entirely (which
+        # leaves the arm above the placed block — breaks the NEXT
+        # check_action's start-of-chain transit), teleport to
+        # NEUTRAL_HOME so the arm is in a canonical pose at exit.
         if not self._validate_put_upright_return():
-            self._trace_phase("put-upright:fast-skip-return")
+            self.env.data.qpos[:7] = _HOME_NEUTRAL_Q
+            self.env.data.qvel[:] = 0.0
+            if getattr(self.env, "_attached", None) is not None:
+                self.env._apply_attachment()
+            mujoco.mj_forward(self.env.model, self.env.data)
+            if self.env.controller is not None:
+                self.env.controller.stop()
+            self._trace_phase("put-upright:fast-teleport-home")
             return True
 
         # 5. Lift back to traverse_z — pure +z motion at the target column.

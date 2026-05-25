@@ -174,6 +174,10 @@ def main() -> int:
     parser.add_argument("--quiet-executor", action="store_true", default=True)
     parser.add_argument("--verbose-executor", dest="quiet_executor",
                             action="store_false")
+    parser.add_argument("--fast", action="store_true",
+                            help="Use FastFeasibilityExecutor (kinematic) "
+                                  "instead of the full executor. Useful for "
+                                  "fast-mode agreement testing.")
     args = parser.parse_args()
 
     sampled = sample_problems(args.in_dir, args.levels,
@@ -193,7 +197,13 @@ def main() -> int:
         )
         env = builder.build_env(rate=10000.0)
         rrt = RRTStar(env, max_iterations=3000)
-        executor = MultilevelBlocksExecutor(env, ws, cfg, motion_planner=rrt)
+        if args.fast:
+            from tampanda.symbolic.domains.multilevel_blocks.feasibility import (
+                _make_executor,
+            )
+            executor = _make_executor(env, ws, cfg, fast=True)
+        else:
+            executor = MultilevelBlocksExecutor(env, ws, cfg, motion_planner=rrt)
         bridge, objects = make_multilevel_blocks_bridge(env, ws, cfg, executor=executor)
 
         results: List[Dict] = []

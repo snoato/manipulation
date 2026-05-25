@@ -127,9 +127,9 @@ def main() -> int:
         # --- put-cube from held-cube ---
         cases.append(_measure(
             env, ws, cfg, executor,
-            "put-cube to stack_L0__5_5 (held-cube)",
+            "put-cube to stack_L0__7_3 (held-cube)",
             {("held-cube", "cube_0"): True},
-            ("put-cube", "cube_0", "stack_L0__5_5"),
+            ("put-cube", "cube_0", "stack_L0__7_3"),
         ))
 
         # --- pick-flat-x on parts ---
@@ -153,18 +153,18 @@ def main() -> int:
         # Need an upright block already on the stack at L0+L1.
         cases.append(_measure(
             env, ws, cfg, executor,
-            "pick-upright at stack_L0__5_5/stack_L1__5_5",
-            {("in", "oblong_0", "stack_L0__5_5"): True,
-             ("in", "oblong_0", "stack_L1__5_5"): True},
-            ("pick-upright", "oblong_0", "stack_L0__5_5", "stack_L1__5_5"),
+            "pick-upright at stack_L0__7_3/stack_L1__7_3",
+            {("in", "oblong_0", "stack_L0__7_3"): True,
+             ("in", "oblong_0", "stack_L1__7_3"): True},
+            ("pick-upright", "oblong_0", "stack_L0__7_3", "stack_L1__7_3"),
         ))
 
         # --- put-upright (the heavy one) ---
         cases.append(_measure(
             env, ws, cfg, executor,
-            "put-upright to stack_L0__5_5/stack_L1__5_5 (held)",
+            "put-upright to stack_L0__7_3/stack_L1__7_3 (held)",
             {("held-upright", "oblong_0"): True},
-            ("put-upright", "oblong_0", "stack_L0__5_5", "stack_L1__5_5"),
+            ("put-upright", "oblong_0", "stack_L0__7_3", "stack_L1__7_3"),
         ))
 
         # --- put-long-upright ---
@@ -173,10 +173,12 @@ def main() -> int:
             "put-long-upright to L0/L1/L2 at (5,5) (held)",
             {("held-upright", "long_0"): True},
             ("put-long-upright", "long_0",
-             "stack_L0__5_5", "stack_L1__5_5", "stack_L2__5_5"),
+             "stack_L0__7_3", "stack_L1__7_3", "stack_L2__5_5"),
         ))
 
         # --- pick-cube INFEAS via prefilter ---
+        # all 4 cardinal neighbours of (5, 5) occupied — prefilter
+        # should reject pick-cube of cube_0 at (5, 5) immediately.
         infeas_state = {
             ("in", "cube_0", "stack_L0__5_5"): True,
             ("in", "cube_1", "stack_L0__4_5"): True,   # W
