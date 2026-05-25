@@ -44,16 +44,19 @@ echo "Output dir:    ${DATA_DIR}"
 echo "Workers/proc:  ${WORKERS}"
 echo "========================================================================"
 
-source /usr/local/miniconda3/etc/profile.d/conda.sh
-conda activate rgnet_fresh
+# Conda isn't installed on the compute nodes at the same path as the
+# workstation, so source conda.sh isn't reliable.  Use the env's Python
+# binary directly — it lives on the shared /work/ filesystem.
+PYTHON_BIN="/work/rleap1/daniel.swoboda/.conda/envs/rgnet_fresh/bin/python"
+export PATH="$(dirname ${PYTHON_BIN}):${PATH}"
 
-# Headless rendering — MuJoCo will try to open a GL context for env init even
-# when --no-viz is set inside generate_data.py (it isn't, by default, so PNG
-# previews are rendered too).
+# Headless rendering — MuJoCo opens an EGL GL context for env init.
 export MUJOCO_GL=egl
 
 cd "${PROJECT_ROOT}"
 
+# The curriculum driver calls `python -u -m ...`; prepending the env's
+# bin to PATH ensures the right interpreter is used.
 WORKERS=${WORKERS} bash examples/generate_mlb_curriculum.sh "${DATA_DIR}"
 
 EXIT_CODE=$?
