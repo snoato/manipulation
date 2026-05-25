@@ -94,6 +94,14 @@ from tampanda.symbolic.domains.multilevel_blocks.templates import (
 
 _HERE = Path(__file__).parent
 _DOMAIN = (_HERE / "pddl" / "domain.pddl").resolve()
+# Bundled into each generated dataset.  The derived-predicate variant
+# replaces the inline disjunctive (exists ...) preconditions with a
+# (:derived (supported ?c)) predicate — needed by pymimir-based GNN
+# encoders (rgnet) which split disjunctive action preconditions into
+# multiple schemas with witness parameters of varying arity.  tampanda's
+# own runtime keeps using ``domain.pddl`` because unified-planning
+# 1.2.0's PDDLReader doesn't accept the :derived-predicates requirement.
+_DOMAIN_BUNDLED = (_HERE / "pddl" / "domain_derived.pddl").resolve()
 
 _DEFAULT_OUTPUT_DIR = Path("data/multilevel_blocks")
 _DEFAULT_TRAIN = 200
@@ -1162,7 +1170,7 @@ def main() -> int:
 
     output_base = args.output_dir.resolve()
     output_base.mkdir(parents=True, exist_ok=True)
-    shutil.copy(_DOMAIN, output_base / "domain.pddl")
+    shutil.copy(_DOMAIN_BUNDLED, output_base / "domain.pddl")
     print(f"Output base: {output_base}")
     print(f"Templates: {args.templates}")
     print(f"Workers: {args.num_workers}")
