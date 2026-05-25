@@ -294,6 +294,13 @@ def filter_action(state: Dict[Tuple, bool], action: Tuple,
 
     if name == "pick-long-upright" and len(action) >= 5:
         cs = [_parse(a) for a in action[2:5]]
+        # Long-upright spans 3 vertical levels of the stack column — by
+        # definition every cell in the trio is a stack cell.  A GNN
+        # candidate that includes a parts cell (region == "parts") is
+        # geometrically impossible; short-circuit instead of crashing
+        # on the int(c.region.split("_L")[1]) below.
+        if not all(c.region.startswith("stack_L") for c in cs):
+            return INFEASIBLE, "pick-long-upright:non-stack-cell"
         cs.sort(key=lambda c: int(c.region.split("_L")[1]))
         c_low, _c_mid, c_high = cs
         if not _upright_jaws_and_column_clear(c_low, c_high, occupied,
@@ -343,6 +350,9 @@ def filter_action(state: Dict[Tuple, bool], action: Tuple,
 
     if name == "put-long-upright" and len(action) >= 5:
         cs = [_parse(a) for a in action[2:5]]
+        # See pick-long-upright above — same guard against non-stack cells.
+        if not all(c.region.startswith("stack_L") for c in cs):
+            return INFEASIBLE, "put-long-upright:non-stack-cell"
         cs.sort(key=lambda c: int(c.region.split("_L")[1]))
         c_low, _c_mid, c_high = cs
         if not _upright_jaws_and_column_clear(c_low, c_high, occupied,
