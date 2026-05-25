@@ -38,6 +38,7 @@ absence in ``(in ...)`` is interpreted as empty.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, Optional, Set, Tuple
 
 from tampanda.symbolic.workspace import Cell
@@ -82,17 +83,34 @@ def _neigh_at_same_region(cell: Cell, dx: int, dy: int) -> str:
     return f"{cell.region}__{cell.ix + dx}_{cell.iy + dy}"
 
 
+_STACK_LEVEL_RE = re.compile(r"^stack_l(\d+)$", re.IGNORECASE)
+
+
+def _stack_level(cell: Cell) -> Optional[int]:
+    """Return stack level (0-indexed) for stack cells; ``None`` for others.
+
+    Case-insensitive: pymimir/xmimir lowercases PDDL symbols, so a cell
+    arriving from rgnet has region ``"stack_l0"``; tampanda's own callers
+    use ``"stack_L0"`` (raw PDDL casing).  Both must work.
+    """
+    m = _STACK_LEVEL_RE.match(cell.region)
+    return int(m.group(1)) if m else None
+
+
 def _column_above(cell: Cell, n_stack_levels: int) -> Tuple[str, ...]:
     """Stack cells directly above ``cell`` up to the top stack level.
 
     Returns an empty tuple if ``cell`` is not a stack cell or is already
-    at the top level.
+    at the top level.  Preserves the casing of ``cell.region``'s ``L``
+    character in the synthesized cell IDs so they match whatever casing
+    the caller uses in the ``occupied`` set.
     """
-    if not cell.region.startswith("stack_L"):
+    level = _stack_level(cell)
+    if level is None:
         return ()
-    level = int(cell.region.split("_L")[1])
+    L_char = "L" if "L" in cell.region else "l"
     return tuple(
-        f"stack_L{k}__{cell.ix}_{cell.iy}"
+        f"stack_{L_char}{k}__{cell.ix}_{cell.iy}"
         for k in range(level + 1, n_stack_levels)
     )
 
@@ -295,13 +313,14 @@ def filter_action(state: Dict[Tuple, bool], action: Tuple,
     if name == "pick-long-upright" and len(action) >= 5:
         cs = [_parse(a) for a in action[2:5]]
         # Long-upright spans 3 vertical levels of the stack column — by
-        # definition every cell in the trio is a stack cell.  A GNN
-        # candidate that includes a parts cell (region == "parts") is
-        # geometrically impossible; short-circuit instead of crashing
-        # on the int(c.region.split("_L")[1]) below.
-        if not all(c.region.startswith("stack_L") for c in cs):
+        # definition every cell in the trio is a stack cell.  Non-stack
+        # candidates (parts cells, or anything pymimir mangles) are
+        # geometrically impossible; short-circuit.  ``_stack_level`` is
+        # case-insensitive — handles ``stack_L0`` AND ``stack_l0``.
+        levels = [_stack_level(c) for c in cs]
+        if any(lv is None for lv in levels):
             return INFEASIBLE, "pick-long-upright:non-stack-cell"
-        cs.sort(key=lambda c: int(c.region.split("_L")[1]))
+        cs.sort(key=_stack_level)
         c_low, _c_mid, c_high = cs
         if not _upright_jaws_and_column_clear(c_low, c_high, occupied,
                                                           n_stack_levels=n_stack):
@@ -350,10 +369,10 @@ def filter_action(state: Dict[Tuple, bool], action: Tuple,
 
     if name == "put-long-upright" and len(action) >= 5:
         cs = [_parse(a) for a in action[2:5]]
-        # See pick-long-upright above — same guard against non-stack cells.
-        if not all(c.region.startswith("stack_L") for c in cs):
+        # See pick-long-upright above — same case-insensitive guard.
+        if any(_stack_level(c) is None for c in cs):
             return INFEASIBLE, "put-long-upright:non-stack-cell"
-        cs.sort(key=lambda c: int(c.region.split("_L")[1]))
+        cs.sort(key=_stack_level)
         c_low, _c_mid, c_high = cs
         if not _upright_jaws_and_column_clear(c_low, c_high, occupied,
                                                           n_stack_levels=n_stack):
