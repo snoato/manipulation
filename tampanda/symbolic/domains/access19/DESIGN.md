@@ -63,6 +63,31 @@ the PDDL only sees pick/put.  All grasps use the palm-+y orientation
 (`FRONT_QUAT = [-0.5, 0.5, 0.5, 0.5]`) — the gripper enters the
 cubicle through the open -y face.
 
+## Spatial structure (`adjacent`)
+
+Mirrors the tabletop spatial-put domain: `(adjacent ?dir ?c1 ?c2)`
+static predicate with `direction` type and `north`/`east` constants.
+
+* `north` = `+iy` (depth, away from robot).
+* `east`  = `+ix` (column index, robot's right).
+
+Emitted per grid in the problem `:init`:
+
+* `shelf_interior` 7×7 with corners `(0,0)` and `(6,6)` excluded →
+  80 edges (84 minus 4 incident to the two excluded corners).
+* `shelf_top` 7×7 → 84 edges.
+* No cross-grid adjacency — the two grids are disjoint by design
+  (lower cubicle and upper deck are at different `level_z` and only
+  the chain executor knows how to traverse between them).
+
+The actions don't use adjacency as a precondition.  The predicate
+exists purely as a structural signal for the GNN: cell nodes get
+linked via the `adjacent` edges so message-passing propagates
+embeddings along the grid structure, letting the value function
+learn spatial semantics (front-to-back row order, column adjacency)
+from the edge topology rather than needing them encoded as
+per-cell positional features.
+
 ## Chain executor (`chains.py`)
 
 Mirrors `tabletop_access` but specialised to the cubicle's tight

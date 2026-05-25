@@ -137,18 +137,37 @@ _OBJECT_NAMES = [f"blocker_{i}" for i in range(18)] + ["ooi"]
 def _enumerate_static_init(workspace) -> Tuple[List[str], List[str]]:
     """Return ``(object_names, static_init_predicates)`` for the PDDL :init.
 
-    The access-19 PDDL domain has no static adjacency predicates
-    (filter-mode pick/put have only dynamic preconditions), so the
-    only "static" thing is the set of objects.  We still emit the
-    function for parity with mlb's API.
+    Static facts = per-grid ``(adjacent north c1 c2)`` and
+    ``(adjacent east c1 c2)`` edges.  Each grid is internally
+    8-connected only through its own cells; there is no adjacency
+    between ``shelf_interior`` and ``shelf_top``.  Convention:
+    ``north`` = +iy (depth, away from robot), ``east`` = +ix
+    (column index, robot's right).
     """
     cells: List[str] = []
+    adjacencies: List[str] = []
     for region_name in workspace.regions:
         region = workspace[region_name]
         for cell in region.cells():
             cells.append(cell.id)
+        # Adjacency edges within this grid only.
+        from tampanda.symbolic.workspace import GridRegion
+        if not isinstance(region, GridRegion):
+            continue
+        nx, ny = region.cells_x, region.cells_y
+        for ix in range(nx):
+            for iy in range(ny):
+                if region.is_excluded(ix, iy):
+                    continue
+                here = f"{region.name}__{ix}_{iy}"
+                if iy + 1 < ny and not region.is_excluded(ix, iy + 1):
+                    north_nb = f"{region.name}__{ix}_{iy + 1}"
+                    adjacencies.append(f"(adjacent north {here} {north_nb})")
+                if ix + 1 < nx and not region.is_excluded(ix + 1, iy):
+                    east_nb = f"{region.name}__{ix + 1}_{iy}"
+                    adjacencies.append(f"(adjacent east {here} {east_nb})")
     objects = list(_OBJECT_NAMES) + cells
-    return objects, []
+    return objects, adjacencies
 
 
 def write_pddl_problem(
@@ -166,6 +185,7 @@ def write_pddl_problem(
       :goal        — conjunction of (occupied cell obj) over the
                      template's goal_placements.
     """
+    _, static_adjacencies = _enumerate_static_init(workspace)
     cell_names: List[str] = []
     for region_name in workspace.regions:
         region = workspace[region_name]
@@ -179,6 +199,7 @@ def write_pddl_problem(
 
     occupied_cells = set(src_layout.values())
     init: List[str] = []
+    init.extend(static_adjacencies)
     for obj, cid in template.source_placements:
         init.append(f"(occupied {cid} {obj})")
     for c in cell_names:
