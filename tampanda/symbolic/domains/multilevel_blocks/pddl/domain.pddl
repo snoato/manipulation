@@ -56,6 +56,13 @@
                                               ; be supported").
     (in-parts ?c - cell)
     (in-stack ?c - cell)
+    ;; Static: ``puttable`` is True for every cell that can be a put-* target.
+    ;; In Phase 1 of the multilevel_blocks redesign this is set to be True
+    ;; for every ``stack_L*`` cell and False (i.e., not asserted) for every
+    ;; ``parts__*`` cell — the parts table is now strictly a pick source.
+    ;; Eliminates the action-space bloat of ``put-* ?b parts__X_Y`` actions
+    ;; from rgnet's GNN expansion at every state.
+    (puttable ?c - cell)
     ;; directional adjacency — asymmetric.  3 predicates cover all 6
     ;; geometric directions: the "reverse" direction is the same predicate
     ;; with parameters swapped.
@@ -157,6 +164,7 @@
     :parameters (?b - block ?c - cell)
     :precondition (and
       (cube ?b) (held-cube ?b) (empty ?c)
+      (puttable ?c)
       (or
         (not (exists (?cb - cell) (above ?cb ?c)))
         (exists (?cb - cell)
@@ -176,6 +184,7 @@
     :precondition (and
       (oblong ?b) (held-flat-x ?b) (east-of ?c1 ?c2)
       (empty ?c1) (empty ?c2)
+      (puttable ?c1) (puttable ?c2)
       (or
         (not (exists (?cb - cell) (above ?cb ?c1)))
         (exists (?cb - cell)
@@ -198,6 +207,7 @@
     :precondition (and
       (oblong ?b) (held-flat-y ?b) (north-of ?c1 ?c2)
       (empty ?c1) (empty ?c2)
+      (puttable ?c1) (puttable ?c2)
       (or
         (not (exists (?cb - cell) (above ?cb ?c1)))
         (exists (?cb - cell)
@@ -222,6 +232,7 @@
     :precondition (and
       (oblong ?b) (held-upright ?b) (above ?c-low ?c-high)
       (empty ?c-low) (empty ?c-high)
+      (puttable ?c-low) (puttable ?c-high)
       (or
         (not (exists (?cb - cell) (above ?cb ?c-low)))
         (exists (?cb - cell)
@@ -359,6 +370,7 @@
       (long ?b) (held-flat-x ?b)
       (east-of ?c1 ?c2) (east-of ?c2 ?c3)
       (empty ?c1) (empty ?c2) (empty ?c3)
+      (puttable ?c1) (puttable ?c2) (puttable ?c3)
       (or
         ;; Centre c2 supported (covers centre-only, 2/3 with centre,
         ;; and full 3/3).
@@ -390,6 +402,7 @@
       (long ?b) (held-flat-y ?b)
       (north-of ?c1 ?c2) (north-of ?c2 ?c3)
       (empty ?c1) (empty ?c2) (empty ?c3)
+      (puttable ?c1) (puttable ?c2) (puttable ?c3)
       (or
         ;; Centre c2 supported.
         (or (not (exists (?cb - cell) (above ?cb ?c2)))
@@ -421,6 +434,7 @@
       (long ?b) (held-upright ?b)
       (above ?c-low ?c-mid) (above ?c-mid ?c-high)
       (empty ?c-low) (empty ?c-mid) (empty ?c-high)
+      (puttable ?c-low) (puttable ?c-mid) (puttable ?c-high)
       (or
         (not (exists (?cb - cell) (above ?cb ?c-low)))
         (exists (?cb - cell)

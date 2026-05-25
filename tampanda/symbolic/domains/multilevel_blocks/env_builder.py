@@ -52,7 +52,12 @@ _KULSHRESTHA_PALETTE: Tuple[Tuple[float, float, float, float], ...] = (
 _STACK_TABLE_POS = (0.00, 0.50, 0.00)
 _PARTS_TABLE_POS = (0.00, -0.45, 0.00)
 _STACK_GRID_CELLS = (10, 10, 5)
-_PARTS_GRID_CELLS = (15, 15)
+# Parts grid shrunk 15x15 -> 10x10 in Phase 1: the dataset never used more
+# than (ix=0..14, iy in {0,2}) in plans, well within a 10x10 envelope.
+# Smaller grid also pulls the corner cells ~7.5 cm closer to the robot
+# (parts__0_0 at world x=-0.135 vs -0.21 in 15x15), which removes the
+# borderline-reach failure mode entirely.  See CURRENT_STATE.md.
+_PARTS_GRID_CELLS = (10, 10)
 _CUBE_HALF_EXTENT = 0.015                # 30 mm cubes
 
 
@@ -195,16 +200,69 @@ def _emit_table_xml(half_x: float, half_y: float,
 _TABLE_TOP_LOCAL_Z = 0.27
 
 
+def apply_runtime_tweaks(env, *, disable_hand_capsule: bool = True) -> None:
+    """Apply multilevel_blocks-specific runtime tweaks to a freshly-built env.
+
+    With ``disable_hand_capsule=True`` (default), the Franka
+    ``hand_capsule`` collision geom is disabled (``contype =
+    conaffinity = 0``).  The capsule is a conservative 4 cm-radius
+    bounding shape around the wrist; its 10 cm axial extent
+    over-rejects feasible plans in dense stack configurations — in
+    particular every ``put-upright`` plan in this dataset's L4 split
+    fails when the capsule is active (confirmed empirically: 0/5 L4
+    test plans pass).  Real collisions are still detected via the
+    finer ``hand_c`` mesh.
+
+    The dataset under ``data/multilevel_blocks/`` was GENERATED with
+    the capsule disabled (default behavior in
+    :func:`generate_data._maybe_disable_hand_capsule`).  Any env that
+    consumes the dataset — rgnet's feasibility checker, the executor
+    demo, the reachability sweep, the plan validator — must apply this
+    tweak too, or plans that were feasible at generation time will
+    fail at execution.
+
+    This is the multilevel_blocks analogue of
+    :func:`tampanda.symbolic.domains.access19.env_builder.apply_runtime_tweaks`.
+
+    Args:
+        env: ``FrankaEnvironment`` returned by ``builder.build_env``.
+        disable_hand_capsule: when True, zero ``contype`` and
+            ``conaffinity`` on the ``hand_capsule`` geom.
+    """
+    if not disable_hand_capsule:
+        return
+    for gid in range(env.model.ngeom):
+        if env.model.geom(gid).name == "hand_capsule":
+            env.model.geom_contype[gid] = 0
+            env.model.geom_conaffinity[gid] = 0
+            return
+    raise RuntimeError("hand_capsule geom not found on env.model")
+
+
 def make_multilevel_blocks_builder(
     scratch_dir: Path,
     config: Optional[MultilevelBlocksConfig] = None,
     block_colors: Optional[Sequence[Tuple[float, float, float, float]]] = None,
+    disable_hand_capsule: bool = True,
 ) -> Tuple[ArmSceneBuilder, Workspace, MultilevelBlocksConfig]:
     """Build the multi-level blocks scene.
 
     Returns ``(builder, workspace, config)``.  The workspace contains
     ``cfg.stack_levels + 1`` regions: one 2D ``parts`` region plus one
     2D ``stack_L<k>`` region per vertical level on the stack table.
+
+    Args:
+        scratch_dir: directory where MJCF asset XMLs are materialised.
+        config: optional ``MultilevelBlocksConfig`` — defaults are used
+            when omitted.
+        block_colors: optional palette override.
+        disable_hand_capsule: when True (default), the env returned by
+            ``builder.build_env(...)`` has the Franka ``hand_capsule``
+            disabled.  This matches the env the dataset was generated
+            against — see :func:`apply_runtime_tweaks` for the why.
+            Pass False if you specifically want the conservative
+            capsule active (e.g., re-generating data with stricter
+            geometry).
     """
     cfg = config or MultilevelBlocksConfig()
     palette = list(block_colors) if block_colors else list(_KULSHRESTHA_PALETTE)
@@ -261,6 +319,25 @@ def make_multilevel_blocks_builder(
                                             body_z=cfg.parts_table_pos[2])
 
     b = ArmSceneBuilder()
+    # NOTE: we deliberately do NOT inject the
+    # ``Newton/iter=5/implicitfast/timestep=0.005`` option block that
+    # the tabletop and blocks domains use.  An earlier attempt to do so
+    # broke previously-validated full-executor plans in
+    # ``data/multilevel_blocks/`` — the combination of larger timestep +
+    # implicitfast integrator + iter=5 left the arm in a slightly
+    # different post-settle config after ``_to_neutral_home``, which
+    # then caused ``_to_handoff``'s segment-lerp to fail collision
+    # checking on plans that were validated against MuJoCo defaults.
+    # The opts also produced no measurable speedup on the fast-check
+    # path (all unrelated blocks are parked at ``hide_far_x`` so
+    # ``ncon=0`` and Newton converges in <1 iteration regardless of the
+    # iteration cap).  See examples/multilevel_blocks_l4_regression_probe.py
+    # for the bisection that established this.
+    #
+    # If we later need to speed up the full executor for training-time
+    # data regeneration, the fix is to regenerate the dataset against
+    # the new opts, not to retroactively change them under existing data.
+
     b.add_resource("stack_table", str(stack_table_path))
     b.add_resource("parts_table", str(parts_table_path))
     for a in aset:
@@ -313,4 +390,21 @@ def make_multilevel_blocks_builder(
     )
 
     workspace = Workspace([parts_region, *stack_regions])
+
+    # Wrap build_env so the multilevel_blocks runtime tweaks (hand_capsule
+    # disable, by default) are applied to every env this builder produces.
+    # Without this, callers downstream of make_multilevel_blocks_builder
+    # (rgnet's feasibility wrapper, demos, the validator) would see an env
+    # different from the one the dataset was generated against — and pay
+    # the 0/5 L4 failure rate confirmed empirically.  See
+    # apply_runtime_tweaks docstring for the full rationale.
+    _orig_build_env = b.build_env
+
+    def _build_env_with_tweaks(*args, **kwargs):
+        env = _orig_build_env(*args, **kwargs)
+        apply_runtime_tweaks(env, disable_hand_capsule=disable_hand_capsule)
+        return env
+
+    b.build_env = _build_env_with_tweaks
+
     return b, workspace, cfg

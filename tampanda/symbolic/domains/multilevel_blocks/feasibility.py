@@ -46,6 +46,10 @@ from tampanda.symbolic.domains.multilevel_blocks.env_builder import (
 from tampanda.symbolic.domains.multilevel_blocks.executor import (
     MultilevelBlocksExecutor,
 )
+from tampanda.symbolic.domains.multilevel_blocks.prefilter import (
+    INFEASIBLE,
+    filter_action,
+)
 from tampanda.symbolic.domains.multilevel_blocks.state import restore_state
 
 
@@ -126,6 +130,39 @@ class FastFeasibilityExecutor(MultilevelBlocksExecutor):
         self.env.data.qpos[8] = 0.02
         mujoco.mj_forward(self.env.model, self.env.data)
 
+    def _return_after_pickput(self, region, used_quat) -> None:
+        """Skip the post-action return-trip — feasibility is fully
+        determined by the pick / put core itself.  Saves ~2
+        plan_joint_lerps per check (~25-30% wall-clock on typical
+        cube and flat actions)."""
+        return
+
+    def _filter_quats_by_anchor_ik(self, anchor_pos, grasp_quats):
+        """No-op in fast mode.
+
+        The B1 IK pre-filter is a NET COST on FEAS in fast mode
+        (anchor IK ~50-200 ms per quat × K quats added; saves nothing
+        because the chain's own plan_joint_lerp would have done the
+        same IK convergence anyway).  It IS worth it in the full
+        executor where the post-filter chain runs real physics and any
+        avoided transit saves seconds.
+
+        Keep grasp_quats unchanged here so the chain proceeds normally.
+        """
+        return list(grasp_quats)
+
+    def _validate_put_upright_return(self) -> bool:
+        """Skip the post-detach return-trip in fast mode (Phase 3.5
+        A1-extension).  The block is placed at this point; phases 5-7
+        of put_upright only validate that the arm can recover, which
+        the next action's start-of-chain transit redoes anyway.
+
+        Saves ~5-10 IK calls per put-upright, most of which run mink to
+        max_iters in the tight upright column.  Expected drop:
+        ~45 s → ~few seconds per put-upright check.
+        """
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Action dispatch
@@ -183,7 +220,15 @@ def _make_executor(
     from tampanda.planners.rrt_star import RRTStar
     cls = FastFeasibilityExecutor if fast else MultilevelBlocksExecutor
     rrt = RRTStar(env, max_iterations=max_iters)
-    return cls(env, workspace, config, motion_planner=rrt)
+    executor = cls(env, workspace, config, motion_planner=rrt)
+    if fast:
+        # Phase 3.5: cap mink max_iters in fast mode.  Reachable IK
+        # targets typically converge in 5-30 iters; unreachable targets
+        # run to max_iters.  Reducing from 1000 -> 200 cuts the worst-
+        # case unconverged probe from ~800 ms to ~150 ms (~5x).  Real
+        # execution keeps the default 1000.
+        env.ik.max_iters = 200
+    return executor
 
 
 def check_action(
@@ -217,13 +262,38 @@ def check_action(
     """
     t_start = time.perf_counter()
 
-    # Restore the symbolic state in MuJoCo.
-    restore_state(env, workspace, config, state, home_qpos=home_qpos)
+    # Geometric pre-filter — cheap (microseconds) rejection of actions
+    # that no yaw / approach can possibly resolve given the current
+    # occupancy.  False negatives are NOT allowed (verified by
+    # examples/multilevel_blocks_prefilter_agreement.py over every plan
+    # action in the dataset).  When the filter returns INFEASIBLE we
+    # skip the executor chain entirely.
+    decision, reason = filter_action(state, action, config)
+    if decision == INFEASIBLE:
+        return {
+            "success": False,
+            "elapsed_s": time.perf_counter() - t_start,
+            "error": f"prefilter:{reason}",
+            "fast": fast,
+        }
 
-    # Build / reuse the executor.
+    # Build / reuse the executor — needed BEFORE restore_state so the
+    # held-state attach path has access to the precomputed handoff
+    # configs.  Without this rgnet's single-action call from a held PDDL
+    # state would silently restore to an empty gripper and the put would
+    # produce a false-positive feasibility result.
     owned_executor = executor is None
     if owned_executor:
         executor = _make_executor(env, workspace, config, fast=fast)
+
+    # Restore the symbolic state in MuJoCo.  When the state has a
+    # held-* fluent we kinematically attach the held block to the EE
+    # via the executor's handoff machinery — only this way does
+    # downstream put / transform code see a proper held world.
+    restore_state(env, workspace, config, state,
+                       home_qpos=home_qpos,
+                       on_held="attach",
+                       executor=executor)
 
     action_name, *args = action
     try:
@@ -290,10 +360,13 @@ def check_action_sequence(
     """
     t_start = time.perf_counter()
 
-    restore_state(env, workspace, config, state, home_qpos=home_qpos)
-
     if executor is None:
         executor = _make_executor(env, workspace, config, fast=fast)
+
+    restore_state(env, workspace, config, state,
+                       home_qpos=home_qpos,
+                       on_held="attach",
+                       executor=executor)
 
     per_action: List[Dict[str, Any]] = []
     overall_ok = True

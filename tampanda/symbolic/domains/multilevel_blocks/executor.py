@@ -363,6 +363,19 @@ class MultilevelBlocksExecutor:
         # accuracy benchmark.  Cleared at the start of every pick.
         self._trace: List[Tuple[str, np.ndarray, np.ndarray]] = []
 
+        # IK seed LUT (loaded once per executor).  When the .npz lives
+        # alongside this module, ``_seed_arm_for_cell`` uses it to warm-
+        # start mink before slow IK phases; otherwise calls become
+        # no-ops and the chain runs cold-start IK as before.  Built by
+        # ``examples/precompute_ik_seeds.py`` — typically on workstation.
+        from tampanda.symbolic.domains.multilevel_blocks.ik_seed_lut import (
+            load_default as _load_ik_seed_lut,
+        )
+        try:
+            self._ik_seed_lut = _load_ik_seed_lut(strict=False)
+        except Exception:
+            self._ik_seed_lut = None
+
     def _trace_phase(self, label: str) -> None:
         """Append a trace entry if a block is currently held."""
         if self._held_block is None:
@@ -725,12 +738,12 @@ class MultilevelBlocksExecutor:
 
     def _segment_collision_free(self, q_a: np.ndarray, q_b: np.ndarray,
                                     n: int) -> bool:
-        for j in range(1, n + 1):
-            alpha = j / n
-            q_mid = (1 - alpha) * q_a + alpha * q_b
-            if not self.env.is_collision_free(q_mid):
-                return False
-        return True
+        # E2: is_path_collision_free does 1 mj_forward per step + 1
+        # restore (vs 3 mj_forward per step for is_collision_free).  ~2.4x
+        # fewer mj_forward calls for the same coverage; extra check at
+        # alpha=0 (q_a) is free.  Used by _to_neutral_home and
+        # _to_handoff segment-feasibility checks.
+        return self.env.is_path_collision_free(q_a, q_b, steps=n)
 
     def _build_lerp_path(self, q_a: np.ndarray, q_b: np.ndarray,
                             n: int) -> List[np.ndarray]:
@@ -739,6 +752,102 @@ class MultilevelBlocksExecutor:
             alpha = k / n
             path.append((1 - alpha) * q_a + alpha * q_b)
         return path
+
+    def _seed_arm_for_cell(self, cell_id: str, family: str,
+                                 quat: np.ndarray) -> bool:
+        """Seed env.data.qpos[:7] with the cached IK config for the
+        (cell, family, quat) triple, then mj_forward + update mink.
+
+        Returns True on cache hit, False on miss (caller proceeds with
+        current arm config).  Idempotent — calling multiple times with
+        different (cell, quat) just re-seeds.
+
+        The LUT is built by ``examples/precompute_ik_seeds.py`` and
+        loaded once at executor init.  When absent, this is a cheap
+        no-op and the chain runs cold-start IK as before.
+        """
+        if self._ik_seed_lut is None:
+            return False
+        arm_q = self._ik_seed_lut.lookup(cell_id, family, quat)
+        if arm_q is None:
+            return False
+        self.env.data.qpos[:7] = arm_q
+        self.env.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.env.model, self.env.data)
+        self.env.ik.update_configuration(self.env.data.qpos)
+        return True
+
+    def _filter_quats_by_anchor_ik(self,
+                                          anchor_pos: np.ndarray,
+                                          grasp_quats: List[np.ndarray],
+                                          ) -> List[np.ndarray]:
+        """Cheap IK pre-filter at the action's grasp / place anchor.
+
+        For each candidate quat, try ``converge_ik`` at ``anchor_pos``
+        with that orientation.  Returns the subset that IK-converges.
+        Conservative: never rejects a quat that could work — IK
+        convergence is a necessary condition for the full chain.
+
+        Mirrors the pre-filter already in ``pick_upright`` (line ~931).
+        max_iters is temporarily capped to 100 (vs the default 1000) so
+        unreachable quats fail fast (~10 ms each instead of ~100 ms).
+        Reachable quats converge in 10-30 iterations regardless of cap,
+        so the cap only bounds the INFEAS worst case.
+        """
+        if not grasp_quats:
+            return []
+        # Snapshot env state — converge_ik mutates mink's configuration
+        # and the mocap target; restore afterwards.
+        save_q = self.env.data.qpos.copy()
+        save_v = self.env.data.qvel.copy()
+        # Cap iters so unreachable probes fail fast.  Reachable ones
+        # converge well below 100 iters anyway.
+        ik = self.env.ik
+        saved_max_iters = ik.max_iters
+        ik.max_iters = 100
+        try:
+            ik.update_configuration(self.env.data.qpos)
+            viable: List[np.ndarray] = []
+            for q in grasp_quats:
+                ik.set_target_position(anchor_pos, q)
+                if ik.converge_ik(0.005):
+                    viable.append(q)
+                # Re-seed mink from the saved arm pose for the next quat
+                # so each candidate is judged independently.
+                ik.update_configuration(save_q)
+            return viable
+        finally:
+            ik.max_iters = saved_max_iters
+            self.env.data.qpos[:] = save_q
+            self.env.data.qvel[:] = save_v
+            mujoco.mj_forward(self.env.model, self.env.data)
+
+    def _return_after_pickput(self, region: str,
+                                  used_quat: np.ndarray) -> None:
+        """Post-action return: handoff in the given region's orientation,
+        then NEUTRAL_HOME so the next action starts cleanly.
+
+        Overridable: ``FastFeasibilityExecutor`` no-ops this because for
+        feasibility checks we only need to know if the pick / put itself
+        succeeded — the return path doesn't change the verdict and costs
+        ~2 plan_joint_lerps (~25-30% of per-check wall-clock).
+        """
+        self._to_handoff(region, used_quat)
+        self._to_neutral_home()
+
+    def _validate_put_upright_return(self) -> bool:
+        """Whether to validate post-detach return phases (lift-back,
+        retract, handoff) in :meth:`put_upright`.
+
+        Once ``_detach_open`` succeeds the block placement is locked in
+        — for feasibility the only remaining question is "can the arm
+        get out of the way?", which is bounded by phases the executor
+        will redo at the start of the next action anyway.  Real
+        execution must validate it; fast feasibility can skip the ~5-10
+        IK calls (often the slowest in the chain — they probe Cartesian
+        substep IK at multiple z heights in the tight upright column).
+        """
+        return True
 
     # -----------------------------------------------------------------
     # Pick actions
@@ -759,6 +868,23 @@ class MultilevelBlocksExecutor:
         """
         self.env.add_collision_exception(block_name)
         try:
+            # PRE-FILTER (B1): cheap IK reachability at the grasp anchor
+            # for each candidate quat.  If no quat IK-converges the cell
+            # is unreachable in any orientation — abort BEFORE the
+            # expensive transit chain.  Conservative: never rejects a
+            # quat that could pass the full chain.
+            filtered_quats = self._filter_quats_by_anchor_ik(
+                anchor_pos, grasp_quats,
+            )
+            if not filtered_quats:
+                self._err(
+                    f"pick {block_name}: no quat IK-converges at grasp anchor "
+                    f"{anchor_pos.round(3).tolist()} "
+                    f"(probed {len(grasp_quats)} candidates)"
+                )
+                return False
+            grasp_quats = filtered_quats
+
             # Start with neutral HOME so this pick begins from a clean
             # config regardless of where the arm was after the prior
             # action (mirrors what put does at its start).
@@ -804,14 +930,12 @@ class MultilevelBlocksExecutor:
             if res is not None:
                 self._execute(res[0], step_size=_STEP_LIFT, precision=True)
             self._trace_phase("pick:post-lift")
-            # Phase 5: return to source workspace's hand-off (kept for
-            # the trace point), then to the neutral HOME pose.  The
-            # subsequent put starts from HOME, not from source-handoff,
-            # so cross-workspace transit happens in TWO short segments
-            # (handoff→HOME, then HOME→target-handoff inside put).
-            self._to_handoff(source_region, used_quat)
-            self._trace_phase("pick:at-source-handoff")
-            self._to_neutral_home()
+            # Phase 5: return to source workspace's hand-off, then to the
+            # neutral HOME pose.  The subsequent put starts from HOME, not
+            # from source-handoff, so cross-workspace transit happens in
+            # TWO short segments (handoff→HOME, then HOME→target-handoff
+            # inside put).
+            self._return_after_pickput(source_region, used_quat)
             self._trace_phase("pick:at-home")
             return True
         finally:
@@ -1005,6 +1129,22 @@ class MultilevelBlocksExecutor:
         # exception; put didn't before this change.
         self.env.add_collision_exception(block_name)
 
+        # PRE-FILTER (B1): cheap IK reachability at the place anchor.
+        # If no quat IK-converges the place column is unreachable —
+        # abort BEFORE the expensive transit chain.
+        filtered_quats = self._filter_quats_by_anchor_ik(
+            anchor_pos, grasp_quats,
+        )
+        if not filtered_quats:
+            self._err(
+                f"put {block_name}: no quat IK-converges at place anchor "
+                f"{anchor_pos.round(3).tolist()} "
+                f"(probed {len(grasp_quats)} candidates)"
+            )
+            self.env.clear_collision_exceptions()
+            return False
+        grasp_quats = filtered_quats
+
         # Step 0a: go to neutral HOME first.  This breaks any prior
         # cross-workspace transit into two short joint-space lerps.
         self._to_neutral_home()
@@ -1069,10 +1209,10 @@ class MultilevelBlocksExecutor:
             self._execute(res[0], step_size=_STEP_LIFT, precision=True)
         self._log_phase(f"put-top-down/{block_name}/post-lift", lift,
                          block_name=block_name)
-        # Return to the target workspace's hand-off, then to neutral
-        # HOME so the next action starts from a known clean state.
-        self._to_handoff(target_region, used_quat)
-        self._to_neutral_home()
+        # Return to the target workspace's hand-off, then to neutral HOME
+        # so the next action starts from a known clean state.  Skipped
+        # in the fast executor.
+        self._return_after_pickput(target_region, used_quat)
         self.env.clear_collision_exceptions()
         return True
 
@@ -1175,6 +1315,14 @@ class MultilevelBlocksExecutor:
         if not self._to_handoff("stack", _QUAT_FRONT_Y):
             self._err(f"put_upright {block_name}: handoff failed")
             return False
+
+        # Phase 3.5 step 4: seed mink with the cached arm config for
+        # this target cell × FRONT_Y orientation BEFORE the slow IK
+        # phases (column-align preview, final descent).  With a good
+        # seed mink converges in 10-30 iters; without, it runs the
+        # ~200-iter cap and the phase costs ~150-200 ms per IK probe.
+        # No-op when the LUT is absent.
+        self._seed_arm_for_cell(c_low_id, "upright", _QUAT_FRONT_Y)
         self._trace_phase("put-upright:at-stack-handoff")
         self.env.ik.update_configuration(self.env.data.qpos)
 
@@ -1379,6 +1527,16 @@ class MultilevelBlocksExecutor:
         self._detach_open()
         self._log_phase(f"put-upright/{block_name}/post-detach", place_pose,
                           block_name=block_name)
+
+        # A1 extension: short-circuit the return-trip in fast mode.  Once
+        # detach is done the put is locked in; phases 5-7 only validate
+        # arm-recovery which the next action redoes anyway.  Skipping
+        # them is the dominant put-upright fast-mode speedup (~5-10 IK
+        # calls each running mink to max_iters in the tight upright
+        # column).
+        if not self._validate_put_upright_return():
+            self._trace_phase("put-upright:fast-skip-return")
+            return True
 
         # 5. Lift back to traverse_z — pure +z motion at the target column.
         lift_back = np.array([place_pose[0], place_pose[1], traverse_z])

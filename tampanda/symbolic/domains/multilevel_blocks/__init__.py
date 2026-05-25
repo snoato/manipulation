@@ -22,6 +22,7 @@ while the symbolic-side rewrite is in progress (Phase 2).
 
 from tampanda.symbolic.domains.multilevel_blocks.env_builder import (
     MultilevelBlocksConfig,
+    apply_runtime_tweaks,
     cube_block_name,
     long_block_name,
     make_multilevel_blocks_builder,
@@ -49,6 +50,7 @@ __all__ = [
     "MultilevelBlocksConfig",
     "MultilevelBlocksExecutor",
     "ParallelFeasibilityChecker",
+    "apply_runtime_tweaks",
     "check_stability",
     "cube_block_name",
     "ground_to_block_layout",

@@ -289,12 +289,88 @@ def build_plan(template: Template) -> List[Tuple]:
 # ---------------------------------------------------------------------------
 
 
-def _enumerate_static_init(workspace, cfg: MultilevelBlocksConfig
-                                ) -> Tuple[List[str], List[str]]:
+def _compute_problem_cells(template, workspace,
+                                 ) -> "frozenset[str]":
+    """Return the minimal cell set needed to express the template's plan.
+
+    Strategy:
+
+    * Include every cell named in ``source_placements`` or
+      ``goal_placements``.
+    * For every stack cell included so far, include all cells directly
+      below it in the same column down to L0 (needed so the ``above``
+      predicate's support chain resolves correctly during put-* support
+      checks, and so the planner / GNN can see the column structure).
+    * For every cell included so far, include its east / north / above
+      neighbours when they exist in the workspace (one-cell adjacency
+      buffer so adjacency-conditioned puts can be GNN-grounded against
+      reasonable alternatives, not the bare minimum).
+
+    Adjacency predicates (east-of / north-of / above) are emitted ONLY
+    between cells that are both in this returned set.  Same for the
+    ``puttable`` predicate.
+    """
+    from tampanda.symbolic.workspace import Cell
+    from tampanda.symbolic.domains.multilevel_blocks.bridge import (
+        _cell_east, _cell_north, _cells_above,
+    )
+
+    used: set = set()
+    for _block, cell_ids, _orient in template.source_placements:
+        used.update(cell_ids)
+    for _block, cell_ids, _orient in template.goal_placements:
+        used.update(cell_ids)
+
+    # Support chain: for any stack cell, include every cell directly
+    # below it in the same column down to L0.
+    support: set = set()
+    for c_id in used:
+        if not c_id.startswith("stack_L"):
+            continue
+        c = Cell.parse(c_id)
+        level = int(c.region.split("_L")[1])
+        for k in range(level):
+            support.add(f"stack_L{k}__{c.ix}_{c.iy}")
+    used.update(support)
+
+    # Cache the workspace's full cell-id set once for cheap membership.
+    workspace_cells = {
+        cell.id
+        for r in workspace.regions
+        for cell in workspace[r].cells()
+    }
+
+    # 1-cell adjacency buffer (east, north, above) so action grounding has
+    # a few neighbours to consider, not just the cells the plan touches.
+    buffer: set = set()
+    for c_id in list(used):
+        c = Cell.parse(c_id)
+        for neigh in (_cell_east(c, workspace),
+                            _cell_north(c, workspace),
+                            _cells_above(c, workspace)):
+            if neigh is not None and neigh.id in workspace_cells:
+                buffer.add(neigh.id)
+    used.update(buffer)
+
+    return frozenset(used)
+
+
+def _enumerate_static_init(workspace, cfg: MultilevelBlocksConfig,
+                                  *,
+                                  cells_subset: "Optional[frozenset[str]]" = None,
+                                  ) -> Tuple[List[str], List[str]]:
     """Return (object_names, static_init_predicates) for a PDDL problem.
 
     Static predicates: cube/oblong/long b, in-parts c, in-stack c,
-    east-of c1 c2, north-of c1 c2, above c-low c-up.
+    puttable c (stack cells only), east-of c1 c2, north-of c1 c2,
+    above c-low c-up.
+
+    Args:
+        workspace: the multilevel_blocks Workspace.
+        cfg: domain config.
+        cells_subset: if provided, restrict declared cells to this set
+            (per-problem dynamic grid).  If None, declare every cell in
+            the workspace (back-compat path).
     """
     from tampanda.symbolic.workspace import Cell
     from tampanda.symbolic.domains.multilevel_blocks.bridge import (
@@ -305,11 +381,13 @@ def _enumerate_static_init(workspace, cfg: MultilevelBlocksConfig
     blocks: List[str] = []
     init: List[str] = []
 
-    # Cells
+    # Cells (filtered by subset if given)
     for region_name in workspace.regions:
         region = workspace[region_name]
         for cell in region.cells():
-            cells.append(cell.id)
+            if cells_subset is None or cell.id in cells_subset:
+                cells.append(cell.id)
+    cell_set = set(cells)
 
     # Blocks (alphabetical, names-only)
     for i in range(cfg.n_cubes):
@@ -327,24 +405,26 @@ def _enumerate_static_init(workspace, cfg: MultilevelBlocksConfig
     for i in range(cfg.n_long):
         init.append(f"(long {long_block_name(i)})")
 
-    # in-parts / in-stack
+    # in-parts / in-stack + puttable (stack only)
     for c in cells:
         if c.startswith("parts__"):
             init.append(f"(in-parts {c})")
         elif c.startswith("stack_L"):
             init.append(f"(in-stack {c})")
+            init.append(f"(puttable {c})")
 
-    # Adjacency: east-of, north-of, above
+    # Adjacency: east-of, north-of, above — only when BOTH cells are
+    # in the declared subset.
     for c_id in cells:
         c = Cell.parse(c_id)
         east = _cell_east(c, workspace)
-        if east is not None:
+        if east is not None and east.id in cell_set:
             init.append(f"(east-of {c.id} {east.id})")
         north = _cell_north(c, workspace)
-        if north is not None:
+        if north is not None and north.id in cell_set:
             init.append(f"(north-of {c.id} {north.id})")
         up = _cells_above(c, workspace)
-        if up is not None:
+        if up is not None and up.id in cell_set:
             init.append(f"(above {c.id} {up.id})")
 
     return blocks + cells, init
@@ -363,8 +443,16 @@ def write_pddl_problem(
     Includes all static predicates (shape, region, adjacency), dynamic
     initial-state predicates (in-block-at-cell, empty, gripper-empty),
     and a goal conjunction over the template's goal_placements.
+
+    The declared cell set is restricted per-problem to only the cells
+    the plan touches (plus 1-cell adjacency + support chain) via
+    ``_compute_problem_cells`` — this is what shrinks the GNN object
+    list from ~763 down to ~50-100 per problem.
     """
-    objects, statics = _enumerate_static_init(workspace, cfg)
+    cells_subset = _compute_problem_cells(template, workspace)
+    objects, statics = _enumerate_static_init(
+        workspace, cfg, cells_subset=cells_subset,
+    )
 
     # Split objects by type for the :objects section.
     blocks = [o for o in objects
