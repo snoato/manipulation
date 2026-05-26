@@ -68,7 +68,14 @@ class IKSeedLUT:
             qs = data["qs"]
         entries: Dict = {}
         for i in range(len(cells)):
-            entries[(str(cells[i]), str(families[i]), str(quat_keys[i]))] = (
+            # Normalize cell_id casing at load time.  precompute_ik_seeds.py
+            # builds with raw PDDL casing (capital-L: stack_L0__...).  Callers
+            # arrive with either casing — tampanda native uses capital, but
+            # rgnet (via pymimir/xmimir) lowercases all symbols.  Storing
+            # lowercase keys and lowercasing the lookup argument makes the
+            # LUT case-insensitive without forcing all callers to normalize.
+            entries[(str(cells[i]).lower(), str(families[i]),
+                          str(quat_keys[i]))] = (
                 np.asarray(qs[i], dtype=np.float64)
             )
         return cls(entries)
@@ -91,11 +98,12 @@ class IKSeedLUT:
 
         ``family`` is ``"top_down"`` (cube / flat / long picks and
         puts) or ``"upright"`` (upright pick / put / long-upright).
-        ``quat`` is matched by rounded key (4-digit precision)."""
-        return self._entries.get((cell_id, family, _quat_key(quat)))
+        ``quat`` is matched by rounded key (4-digit precision).
+        ``cell_id`` is matched case-insensitively — see ``from_path``."""
+        return self._entries.get((cell_id.lower(), family, _quat_key(quat)))
 
     def has(self, cell_id: str, family: str, quat: np.ndarray) -> bool:
-        return (cell_id, family, _quat_key(quat)) in self._entries
+        return (cell_id.lower(), family, _quat_key(quat)) in self._entries
 
     def __len__(self) -> int:
         return self.n
