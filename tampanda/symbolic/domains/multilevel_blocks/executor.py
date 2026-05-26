@@ -1764,17 +1764,19 @@ class MultilevelBlocksExecutor:
             cached_descent = probe_goal_q.get((qkey, "descend"))
             if cached_descent is not None:
                 start_q = self.env.data.qpos[:7].copy()
-                # Collision-check the joint-lerp before committing.
-                clean = self.env.is_collision_free(cached_descent)
-                if clean:
-                    for j in range(1, fd_substeps + 1):
-                        alpha = j / fd_substeps
-                        q_mid = ((1 - alpha) * start_q
-                                       + alpha * cached_descent)
-                        if not self.env.is_collision_free(q_mid):
-                            clean = False
-                            break
-                if clean:
+                # Only collision-check the GOAL pose — fast mode has no
+                # physics simulation; the joint-lerp is the controller's
+                # interpolation that "happens" instantaneously via
+                # set_qpos.  An intermediate clipping in the lerp doesn't
+                # corrupt simulation state because no physics steps run
+                # between waypoints.  Earlier attempt to collision-check
+                # the lerp was over-conservative — it rejected paths
+                # whose ENDPOINTS were both clean but whose joint-space
+                # straight line briefly clipped (e.g. wrist swinging
+                # through a neighbour column on the way down).  Mirrors
+                # the column-align teleport (line 1714) which also only
+                # checks endpoints by construction.
+                if self.env.is_collision_free(cached_descent):
                     res = ([start_q, cached_descent.copy()], used_quat)
         if res is None:
             res = self._try_plan_to_pose(place_pose, [used_quat],
