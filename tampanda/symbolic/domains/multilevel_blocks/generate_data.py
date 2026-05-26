@@ -132,7 +132,7 @@ _LEVELS: Dict[int, List[str]] = {
     2: ["oblong_tower", "long_pyramid"],                # same-orient oblong
     3: ["oblong_tower", "cube_tower"],                  # h=4, orient-change
     4: ["upright_bridges", "tower_on_bridge"],          # FULL executor only
-    5: ["multi_tower", "staircase", "compound"],
+    5: ["multi_tower", "staircase", "compound", "double_bridges"],
 }
 
 # Levels whose templates exercise put_upright.  put_upright works

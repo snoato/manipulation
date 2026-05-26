@@ -605,10 +605,15 @@ def compound(rng: np.random.Generator, *,
         iy = int(rng.integers(2, cells_y - 4))
         sub_anchors.append((max(0, ix), iy))
 
-    # Curated substructure builders that fit in ~3x3 footprint.  Note:
-    # tower_on_bridge/upright_bridges excluded — see _LEVELS note in
-    # generate_data.py about the put_upright + FAST executor bug.
-    choices = ["cube_tower", "long_pyramid"]
+    # Curated substructure builders that fit in ~3x3 footprint.
+    # Upright substructures (upright_bridges, tower_on_bridge) were
+    # previously excluded due to put_upright failures in the FAST
+    # executor.  Those failures are gone after commits de4cf03 (LUT
+    # speedup), 330c88c (prefilter casing) and d07d72a (LUT lookup
+    # casing); re-enabled so the L5 compound template properly subsumes
+    # L4's upright vocabulary and becomes a real compositional OOD probe.
+    choices = ["cube_tower", "long_pyramid",
+                  "tower_on_bridge", "upright_bridges"]
 
     # Aggregate.
     alloc = _PartsAllocator(cfg)
@@ -650,6 +655,21 @@ def compound(rng: np.random.Generator, *,
                 oblong_idx += 4
                 long_idx += 2
                 cube_idx += 2
+        elif choice == "upright_bridges":
+            if sa_ix + 2 >= cells_x or sa_iy + 2 >= cells_y:
+                # Same fallback as tower_on_bridge — 3x3 footprint
+                # doesn't fit at this anchor.
+                h = int(rng.integers(2, 4))
+                sub = cube_tower(h, sa_ix, sa_iy, cfg=cfg,
+                                       start_idx=cube_idx)
+                cube_idx += h
+                choice = "cube_tower"
+            else:
+                sub = upright_bridges(sa_ix, sa_iy, cfg=cfg,
+                                              oblong_start=oblong_idx,
+                                              long_start=long_idx)
+                oblong_idx += 4
+                long_idx += 2
         subs.append(choice)
         # Merge goal placements (build orders) and re-allocate sources.
         all_goal.extend(sub.goal_placements)
