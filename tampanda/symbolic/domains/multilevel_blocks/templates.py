@@ -462,6 +462,375 @@ def simple_long_rotate(ix: int, iy: int, *,
     )
 
 
+# ===========================================================================
+# Extended primitive-exposure templates (L0/L1/L2)
+# ===========================================================================
+# Cover the 17 actions not exposed by the first 3 simple_* templates:
+#   * Group A — y-axis symmetric variants (pick-flat-y, pick-long-y,
+#     turn-y-to-x, turn-long-y-to-x, make-upright-from-y,
+#     make-long-upright-from-{x,y})
+#   * Group B — basic put-flat-{x,y} as 2-action problems
+#   * Group C — pick-from-stack reverse primitives (pick-upright,
+#     pick-long-upright, make-flat-{x,y}-from-upright,
+#     make-long-flat-{x,y}-from-upright, put-long-upright)
+#
+# All single-block 2-3 action templates.  Most use ``alloc(1, N)`` for
+# flat-y sources; "pick-from-stack" templates skip parts allocator
+# entirely (source cells are stack cells with multi-cell orientation).
+# ===========================================================================
+
+
+def simple_oblong_flat_x(ix: int, iy: int, *,
+                              cfg: Optional[MultilevelBlocksConfig] = None,
+                              oblong_start: int = 0) -> Template:
+    """L0: oblong picked flat-x, placed flat-x at (ix..ix+1, iy).
+    Plan = 2 actions: pick-flat-x, put-flat-x."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = oblong_block_name(oblong_start)
+    s_cells = alloc.alloc(2, 1)
+    return Template(
+        name=f"simple_oblong_flat_x_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy), _stack(0, ix+1, iy)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-x")],
+        build_order=[block],
+        metadata={"difficulty": 0, "anchor": (ix, iy)},
+    )
+
+
+def simple_oblong_flat_y(ix: int, iy: int, *,
+                              cfg: Optional[MultilevelBlocksConfig] = None,
+                              oblong_start: int = 0) -> Template:
+    """L0: oblong picked flat-y (source cells along y), placed flat-y
+    at (ix, iy..iy+1).  Plan = 2 actions: pick-flat-y, put-flat-y."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = oblong_block_name(oblong_start)
+    s_cells = alloc.alloc(1, 2)   # 1 wide × 2 tall (y direction)
+    return Template(
+        name=f"simple_oblong_flat_y_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy), _stack(0, ix, iy+1)],
+                                 "flat-y")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 0, "anchor": (ix, iy)},
+    )
+
+
+def simple_long_y(ix: int, iy: int, *,
+                       cfg: Optional[MultilevelBlocksConfig] = None,
+                       long_start: int = 0) -> Template:
+    """L0: long picked flat-y, placed flat-y at (ix, iy..iy+2).
+    Plan = 2 actions: pick-long-y, put-long-y."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(long_start)
+    s_cells = alloc.alloc(1, 3)
+    return Template(
+        name=f"simple_long_y_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy),
+                                  _stack(0, ix, iy+1),
+                                  _stack(0, ix, iy+2)],
+                                 "flat-y")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 0, "anchor": (ix, iy)},
+    )
+
+
+def simple_pick_upright_then_put_upright(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        oblong_start: int = 0) -> Template:
+    """L0: oblong starts upright at stack (ix, iy)+(L0,L1); picked,
+    placed upright at stack (ix2, iy2)+(L0,L1).  Source ≠ Goal cells.
+    Plan = 2 actions: pick-upright, put-upright."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = oblong_block_name(oblong_start)
+    return Template(
+        name=f"simple_pick_upright_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2), _stack(1, ix2, iy2)],
+                                 "upright")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy), _stack(1, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 0,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
+def simple_pick_long_upright_then_put_long_upright(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        long_start: int = 0) -> Template:
+    """L0: long starts upright at stack (ix,iy)+(L0,L1,L2); picked,
+    placed upright at (ix2,iy2)+(L0,L1,L2).  Plan = 2 actions:
+    pick-long-upright, put-long-upright."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = long_block_name(long_start)
+    return Template(
+        name=f"simple_pick_long_upright_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2),
+                                  _stack(1, ix2, iy2),
+                                  _stack(2, ix2, iy2)],
+                                 "upright")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy),
+                                   _stack(1, ix, iy),
+                                   _stack(2, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 0,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
+def simple_oblong_rotate_y_to_x(ix: int, iy: int, *,
+                                       cfg: Optional[MultilevelBlocksConfig] = None,
+                                       oblong_start: int = 0) -> Template:
+    """L1: oblong picked flat-y, rotated to flat-x, placed flat-x at
+    (ix..ix+1, iy).  Plan = 3 actions:
+    pick-flat-y, turn-y-to-x, put-flat-x."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = oblong_block_name(oblong_start)
+    s_cells = alloc.alloc(1, 2)
+    return Template(
+        name=f"simple_oblong_rotate_y_to_x_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy), _stack(0, ix+1, iy)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_long_rotate_y_to_x(ix: int, iy: int, *,
+                                     cfg: Optional[MultilevelBlocksConfig] = None,
+                                     long_start: int = 0) -> Template:
+    """L1: long picked flat-y, rotated to flat-x, placed flat-x along
+    (ix..ix+2, iy).  Plan = 3 actions: pick-long-y, turn-long-y-to-x,
+    put-long-x."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(long_start)
+    s_cells = alloc.alloc(1, 3)
+    return Template(
+        name=f"simple_long_rotate_y_to_x_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy),
+                                  _stack(0, ix+1, iy),
+                                  _stack(0, ix+2, iy)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_make_upright_from_y(ix: int, iy: int, *,
+                                      cfg: Optional[MultilevelBlocksConfig] = None,
+                                      oblong_start: int = 0) -> Template:
+    """L1: oblong picked flat-y, rotated upright via the y-axis variant,
+    placed upright at stack (ix,iy)+(L0,L1).  Plan = 3 actions:
+    pick-flat-y, make-upright-from-y, put-upright."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = oblong_block_name(oblong_start)
+    s_cells = alloc.alloc(1, 2)
+    return Template(
+        name=f"simple_make_upright_from_y_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy), _stack(1, ix, iy)],
+                                 "upright")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_make_long_upright_from_x(ix: int, iy: int, *,
+                                            cfg: Optional[MultilevelBlocksConfig] = None,
+                                            long_start: int = 0) -> Template:
+    """L1: long picked flat-x, rotated upright (long-upright via x),
+    placed upright at stack (ix,iy)+(L0,L1,L2).  Plan = 3 actions:
+    pick-long-x, make-long-upright-from-x, put-long-upright."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(long_start)
+    s_cells = alloc.alloc(3, 1)
+    return Template(
+        name=f"simple_make_long_upright_from_x_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy),
+                                  _stack(1, ix, iy),
+                                  _stack(2, ix, iy)],
+                                 "upright")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-x")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_make_long_upright_from_y(ix: int, iy: int, *,
+                                            cfg: Optional[MultilevelBlocksConfig] = None,
+                                            long_start: int = 0) -> Template:
+    """L1: long picked flat-y, rotated upright (long-upright via y),
+    placed upright at stack (ix,iy)+(L0,L1,L2).  Plan = 3 actions:
+    pick-long-y, make-long-upright-from-y, put-long-upright."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(long_start)
+    s_cells = alloc.alloc(1, 3)
+    return Template(
+        name=f"simple_make_long_upright_from_y_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy),
+                                  _stack(1, ix, iy),
+                                  _stack(2, ix, iy)],
+                                 "upright")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-y")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_unstack_oblong_to_flat_x(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        oblong_start: int = 0) -> Template:
+    """L2: oblong starts upright at stack (ix,iy)+(L0,L1); picked,
+    rotated to flat-x in hand, placed flat-x at (ix2..ix2+1, iy2).
+    Plan = 3 actions: pick-upright, make-flat-x-from-upright,
+    put-flat-x."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = oblong_block_name(oblong_start)
+    return Template(
+        name=f"simple_unstack_oblong_to_flat_x_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2),
+                                  _stack(0, ix2+1, iy2)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy), _stack(1, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 2,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
+def simple_unstack_oblong_to_flat_y(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        oblong_start: int = 0) -> Template:
+    """L2: oblong starts upright at stack (ix,iy)+(L0,L1); picked,
+    rotated to flat-y, placed flat-y at (ix2, iy2..iy2+1).
+    Plan = 3 actions: pick-upright, make-flat-y-from-upright,
+    put-flat-y."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = oblong_block_name(oblong_start)
+    return Template(
+        name=f"simple_unstack_oblong_to_flat_y_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2),
+                                  _stack(0, ix2, iy2+1)],
+                                 "flat-y")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy), _stack(1, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 2,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
+def simple_unstack_long_to_flat_x(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        long_start: int = 0) -> Template:
+    """L2: long starts upright at stack (ix,iy)+(L0,L1,L2); picked,
+    rotated to flat-x, placed flat-x at (ix2..ix2+2, iy2).
+    Plan = 3 actions: pick-long-upright, make-long-flat-x-from-upright,
+    put-long-x."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = long_block_name(long_start)
+    return Template(
+        name=f"simple_unstack_long_to_flat_x_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2),
+                                  _stack(0, ix2+1, iy2),
+                                  _stack(0, ix2+2, iy2)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy),
+                                   _stack(1, ix, iy),
+                                   _stack(2, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 2,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
+def simple_unstack_long_to_flat_y(
+        ix: int, iy: int, ix2: int, iy2: int, *,
+        cfg: Optional[MultilevelBlocksConfig] = None,
+        long_start: int = 0) -> Template:
+    """L2: long starts upright at stack (ix,iy)+(L0,L1,L2); picked,
+    rotated to flat-y, placed flat-y at (ix2, iy2..iy2+2).
+    Plan = 3 actions: pick-long-upright, make-long-flat-y-from-upright,
+    put-long-y."""
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    block = long_block_name(long_start)
+    return Template(
+        name=f"simple_unstack_long_to_flat_y_anchor({ix},{iy})_to_({ix2},{iy2})",
+        goal_placements=[(block,
+                                 [_stack(0, ix2, iy2),
+                                  _stack(0, ix2, iy2+1),
+                                  _stack(0, ix2, iy2+2)],
+                                 "flat-y")],
+        source_placements=[(block,
+                                  [_stack(0, ix, iy),
+                                   _stack(1, ix, iy),
+                                   _stack(2, ix, iy)],
+                                  "upright")],
+        build_order=[block],
+        metadata={"difficulty": 2,
+                       "anchor": (ix, iy), "goal_anchor": (ix2, iy2)},
+    )
+
+
 def multi_tower(rng: np.random.Generator, *,
                    cfg: Optional[MultilevelBlocksConfig] = None,
                    n_towers: int = 3, height_range: Tuple[int, int] = (2, 4),

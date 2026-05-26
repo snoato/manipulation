@@ -83,7 +83,21 @@ from tampanda.symbolic.domains.multilevel_blocks.templates import (
     oblong_tower,
     random_mix,
     simple_long_rotate,
+    simple_long_rotate_y_to_x,
     simple_long_x,
+    simple_long_y,
+    simple_make_long_upright_from_x,
+    simple_make_long_upright_from_y,
+    simple_make_upright_from_y,
+    simple_oblong_flat_x,
+    simple_oblong_flat_y,
+    simple_oblong_rotate_y_to_x,
+    simple_pick_long_upright_then_put_long_upright,
+    simple_pick_upright_then_put_upright,
+    simple_unstack_long_to_flat_x,
+    simple_unstack_long_to_flat_y,
+    simple_unstack_oblong_to_flat_x,
+    simple_unstack_oblong_to_flat_y,
     simple_upright_pickput,
     staircase,
     tower_on_bridge,
@@ -115,12 +129,26 @@ _DEFAULT_SEED = 42
 
 _TEMPLATE_NAMES = (
     "cube_pick_put",       # L0
-    "simple_long_x",       # L0 — primitive exposure: put-long-x
+    "simple_long_x",       # L0 — primitive: put-long-x
+    "simple_oblong_flat_x",   # L0 — primitive: put-flat-x
+    "simple_oblong_flat_y",   # L0 — primitive: pick-flat-y + put-flat-y
+    "simple_long_y",          # L0 — primitive: pick-long-y
+    "simple_pick_upright_then_put_upright",   # L0 — primitive: pick-upright
+    "simple_pick_long_upright_then_put_long_upright",  # L0 — primitive: pick-long-upright + put-long-upright
     "simple_upright_pickput",  # L1 — primitive: put-upright + make-upright-from-x
     "simple_long_rotate",  # L1 — primitive: put-long-y + turn-long-x-to-y
+    "simple_oblong_rotate_y_to_x",  # L1 — primitive: turn-y-to-x
+    "simple_long_rotate_y_to_x",    # L1 — primitive: turn-long-y-to-x
+    "simple_make_upright_from_y",   # L1 — primitive: make-upright-from-y
+    "simple_make_long_upright_from_x",  # L1 — primitive: make-long-upright-from-x
+    "simple_make_long_upright_from_y",  # L1 — primitive: make-long-upright-from-y
     "cube_tower",          # L1
     "oblong_tower",        # L2 (same-orient) / L3 (orient-change)
     "long_pyramid",        # L2
+    "simple_unstack_oblong_to_flat_x",  # L2 — primitive: make-flat-x-from-upright
+    "simple_unstack_oblong_to_flat_y",  # L2 — primitive: make-flat-y-from-upright
+    "simple_unstack_long_to_flat_x",    # L2 — primitive: make-long-flat-x-from-upright
+    "simple_unstack_long_to_flat_y",    # L2 — primitive: make-long-flat-y-from-upright
     "upright_bridges",     # L4
     "tower_on_bridge",     # L4
     "multi_tower",         # L5
@@ -133,14 +161,30 @@ _TEMPLATE_NAMES = (
 # Map each difficulty level to its template options.  Used by
 # --curriculum-spec to filter templates per level.
 _LEVELS: Dict[int, List[str]] = {
-    # L0 / L1 now include primitive-exposure templates that exercise the
-    # L4 motion primitives (put-upright, make-upright-from-x, put-long-x,
-    # put-long-y, turn-long-x-to-y) in 2-3 action single-block problems,
-    # so the model sees these primitives during easy-curriculum training
-    # before encountering them inside L4's denser bridge structures.
-    0: ["cube_pick_put", "simple_long_x"],
-    1: ["cube_tower", "simple_upright_pickput", "simple_long_rotate"],
-    2: ["oblong_tower", "long_pyramid"],                # same-orient oblong
+    # L0 / L1 / L2 carry primitive-exposure templates that exercise EVERY
+    # action in the multilevel_blocks domain at least once in a 2-3 action
+    # single-block problem.  Coverage breakdown:
+    #   L0 — pick/put with no in-hand transform (7 templates)
+    #   L1 — pick + in-hand transform + put (8 templates incl. cube_tower)
+    #   L2 — pick-from-stack + in-hand transform + put-flat (6 templates
+    #        incl. existing oblong_tower / long_pyramid)
+    # See templates.py for which action each new template covers.
+    0: ["cube_pick_put", "simple_long_x",
+         "simple_oblong_flat_x", "simple_oblong_flat_y",
+         "simple_long_y",
+         "simple_pick_upright_then_put_upright",
+         "simple_pick_long_upright_then_put_long_upright"],
+    1: ["cube_tower",
+         "simple_upright_pickput", "simple_long_rotate",
+         "simple_oblong_rotate_y_to_x", "simple_long_rotate_y_to_x",
+         "simple_make_upright_from_y",
+         "simple_make_long_upright_from_x",
+         "simple_make_long_upright_from_y"],
+    2: ["oblong_tower", "long_pyramid",
+         "simple_unstack_oblong_to_flat_x",
+         "simple_unstack_oblong_to_flat_y",
+         "simple_unstack_long_to_flat_x",
+         "simple_unstack_long_to_flat_y"],
     3: ["oblong_tower", "cube_tower"],                  # h=4, orient-change
     4: ["upright_bridges", "tower_on_bridge"],          # FULL executor only
     5: ["multi_tower", "staircase", "compound", "double_bridges"],
@@ -160,13 +204,11 @@ _CURRICULA: Dict[str, List[Tuple[int, int]]] = {
     "train_600": [(0, 60), (1, 120), (2, 120), (3, 120), (4, 90), (5, 90)],
     "train_400": [(0, 40), (1, 80), (2, 80), (3, 80), (4, 60), (5, 60)],
     "train_200": [(0, 20), (1, 40), (2, 40), (3, 40), (4, 30), (5, 30)],
-    # train_l0_l4: L5 held out for OOD evaluation.  Same per-level counts
-    # as train_600's L0-L4 portion (60+120+120+120+90 = 510).  L5's
-    # composite templates (multi_tower, double_bridges, staircase,
-    # compound) never appear in this train set, so val/test L5 numbers
-    # measure compositional generalization to never-seen template
-    # structures.
-    "train_l0_l4": [(0, 60), (1, 120), (2, 120), (3, 120), (4, 90)],
+    # train_l0_l4: L5 held out for OOD evaluation.  L0/L1 counts bumped
+    # (140/160) to accommodate the expanded primitive-exposure template
+    # set — each new template gets ~20 problems, similar to the legacy
+    # cube_pick_put / cube_tower counts.
+    "train_l0_l4": [(0, 140), (1, 160), (2, 120), (3, 120), (4, 90)],
     "val_per_level": [(k, 20) for k in range(6)],
     "test_per_level": [(k, 20) for k in range(6)],
 }
@@ -727,6 +769,113 @@ def _sample_template(
             ix = int(rng.integers(5, cells_x - 1))
         iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 4)
         return simple_long_rotate(ix, iy, cfg=cfg)
+
+    # ---- Extended primitive-exposure templates ----
+    # Helper to pick a left-biased ix (85 % left-half).
+    def _biased_ix(low: int, high: int, mid: int = 5) -> int:
+        if rng.random() < 0.85 and mid > low:
+            return int(rng.integers(low, min(mid, high)))
+        return int(rng.integers(low, high))
+
+    if choice == "simple_oblong_flat_x":
+        ix = _biased_ix(1, cells_x - 2)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_oblong_flat_x(ix, iy, cfg=cfg)
+
+    if choice == "simple_oblong_flat_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 3)
+        return simple_oblong_flat_y(ix, iy, cfg=cfg)
+
+    if choice == "simple_long_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 4)
+        return simple_long_y(ix, iy, cfg=cfg)
+
+    if choice == "simple_pick_upright_then_put_upright":
+        # Source upright at (ix, iy), goal upright at different (ix2, iy2)
+        # — both anchors left-biased; ensure they don't overlap.
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 1)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        if (ix, iy) == (ix2, iy2):
+            ix2 = (ix2 + 1) % (cells_x - 1) or 1
+        return simple_pick_upright_then_put_upright(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
+
+    if choice == "simple_pick_long_upright_then_put_long_upright":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 1)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        if (ix, iy) == (ix2, iy2):
+            ix2 = (ix2 + 1) % (cells_x - 1) or 1
+        return simple_pick_long_upright_then_put_long_upright(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
+
+    if choice == "simple_oblong_rotate_y_to_x":
+        ix = _biased_ix(1, cells_x - 2)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_oblong_rotate_y_to_x(ix, iy, cfg=cfg)
+
+    if choice == "simple_long_rotate_y_to_x":
+        ix = _biased_ix(1, cells_x - 3)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_long_rotate_y_to_x(ix, iy, cfg=cfg)
+
+    if choice == "simple_make_upright_from_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 3)
+        return simple_make_upright_from_y(ix, iy, cfg=cfg)
+
+    if choice == "simple_make_long_upright_from_x":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_make_long_upright_from_x(ix, iy, cfg=cfg)
+
+    if choice == "simple_make_long_upright_from_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 4)
+        return simple_make_long_upright_from_y(ix, iy, cfg=cfg)
+
+    if choice == "simple_unstack_oblong_to_flat_x":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 2)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_unstack_oblong_to_flat_x(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
+
+    if choice == "simple_unstack_oblong_to_flat_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 1)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 3)
+        return simple_unstack_oblong_to_flat_y(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
+
+    if choice == "simple_unstack_long_to_flat_x":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 3)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_unstack_long_to_flat_x(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
+
+    if choice == "simple_unstack_long_to_flat_y":
+        ix = _biased_ix(1, cells_x - 1)
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        ix2 = _biased_ix(1, cells_x - 1)
+        iy2 = _safe_iy(rng, cfg, max_iy_cap=cells_y - 4)
+        return simple_unstack_long_to_flat_y(
+            ix, iy, ix2, iy2, cfg=cfg,
+        )
 
     if choice == "cube_tower":
         if level is not None and level <= 1:
