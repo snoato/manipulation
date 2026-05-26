@@ -35,12 +35,17 @@ gen_one() {
         --num-workers "$WORKERS"
 }
 
-# train_l0_l4 (flat): 60 + 120 + 120 + 120 + 90 = 510 problems
+# train_l0_l4 (flat): 140 + 160 + 120 + 120 + 90 = 630 problems
+# Bumped L0/L1 quotas to accommodate the expanded primitive-exposure
+# template set added in commit 1ca5acc (~20 problems per template).
+# Clear the train_l0_l4 directory first so a previous (smaller) regen
+# doesn't leave stale config files at the higher offsets.
+rm -rf "$DATA_DIR/train_l0_l4"
 gen_one 0 0
-gen_one 1 60
-gen_one 2 180
-gen_one 3 300
-gen_one 4 420
+gen_one 1 140
+gen_one 2 300
+gen_one 3 420
+gen_one 4 540
 
 echo
 echo "=== DONE ==="
