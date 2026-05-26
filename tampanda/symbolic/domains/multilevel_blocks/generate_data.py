@@ -816,6 +816,14 @@ def _generate_one(
     seq_res = check_action_sequence(
         env, workspace, cfg, init_state, plan,
         fast=use_fast, short_circuit=True, executor=executor,
+        # Per-action restore: judge each action on a freshly-restored
+        # scene reflecting the symbolic state, matching training-time
+        # ``check_action`` semantics.  Avoids the cumulative drift
+        # where sequential ``dispatch_action`` calls leave blocks
+        # ~30 mm off rest, eventually triggering spurious collision
+        # rejections on downstream upright placements (compound /
+        # double_bridges L5 templates).
+        per_action_restore=True,
     )
     if not seq_res["success"]:
         return None

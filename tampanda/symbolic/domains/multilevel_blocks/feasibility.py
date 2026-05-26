@@ -363,6 +363,82 @@ def check_full(env, workspace, config, state, action, **kwargs):
                             fast=False, **kwargs)
 
 
+# action_name → (kind, held_fluent) for pick / put actions.  ``held`` is
+# the (held-X b) atom that the action adds (pick) or removes (put).  The
+# action's remaining args (after the block) are the cells to add/remove
+# (in b c) atoms for.  Long-* picks and puts use the same held fluents
+# as the corresponding oblong-* actions because the PDDL domain shares
+# held-flat-x / held-flat-y / held-upright across oblong and long types,
+# with the (long ?b) static predicate distinguishing them.
+_PICK_PUT_HELD: Dict[str, str] = {
+    "pick-cube": "held-cube",
+    "put-cube": "held-cube",
+    "pick-flat-x": "held-flat-x",
+    "put-flat-x": "held-flat-x",
+    "pick-flat-y": "held-flat-y",
+    "put-flat-y": "held-flat-y",
+    "pick-long-x": "held-flat-x",
+    "put-long-x": "held-flat-x",
+    "pick-long-y": "held-flat-y",
+    "put-long-y": "held-flat-y",
+    "pick-upright": "held-upright",
+    "put-upright": "held-upright",
+    "pick-long-upright": "held-upright",
+    "put-long-upright": "held-upright",
+}
+
+# In-hand transforms: action_name → (held_from, held_to).
+_TRANSFORM_HELD: Dict[str, Tuple[str, str]] = {
+    "make-flat-x-from-upright":      ("held-upright", "held-flat-x"),
+    "make-flat-y-from-upright":      ("held-upright", "held-flat-y"),
+    "make-upright-from-x":           ("held-flat-x",  "held-upright"),
+    "make-upright-from-y":           ("held-flat-y",  "held-upright"),
+    "make-long-flat-x-from-upright": ("held-upright", "held-flat-x"),
+    "make-long-flat-y-from-upright": ("held-upright", "held-flat-y"),
+    "make-long-upright-from-x":      ("held-flat-x",  "held-upright"),
+    "make-long-upright-from-y":      ("held-flat-y",  "held-upright"),
+    "turn-x-to-y":                   ("held-flat-x",  "held-flat-y"),
+    "turn-y-to-x":                   ("held-flat-y",  "held-flat-x"),
+    "turn-long-x-to-y":              ("held-flat-x",  "held-flat-y"),
+    "turn-long-y-to-x":              ("held-flat-y",  "held-flat-x"),
+}
+
+
+def apply_action_effects(state: Dict[Tuple, bool],
+                              action: Tuple) -> Dict[Tuple, bool]:
+    """Return a NEW state with PDDL action effects applied symbolically.
+
+    Pure dict math — no MuJoCo, no IK.  Used by
+    :func:`check_action_sequence` when ``per_action_restore=True`` to
+    derive the intermediate symbolic state to ``restore_state`` to
+    between actions, matching exactly what training-time
+    ``check_action`` (singular) would see for each (state, action) pair.
+
+    Action vocabulary handled: every pick-*, put-*, make-*, turn-*
+    in the multilevel_blocks domain.  Unknown action names return the
+    state unchanged (defensive).
+    """
+    name = action[0]
+    block = action[1]
+    new = dict(state)
+    if name in _PICK_PUT_HELD:
+        held = _PICK_PUT_HELD[name]
+        cells = action[2:]
+        if name.startswith("pick-"):
+            for c in cells:
+                new.pop(("in", block, c), None)
+            new[(held, block)] = True
+        elif name.startswith("put-"):
+            new.pop((held, block), None)
+            for c in cells:
+                new[("in", block, c)] = True
+    elif name in _TRANSFORM_HELD:
+        held_from, held_to = _TRANSFORM_HELD[name]
+        new.pop((held_from, block), None)
+        new[(held_to, block)] = True
+    return new
+
+
 def check_action_sequence(
     env,
     workspace: Workspace,
@@ -374,6 +450,7 @@ def check_action_sequence(
     home_qpos: Optional[np.ndarray] = None,
     short_circuit: bool = True,
     executor: Optional[MultilevelBlocksExecutor] = None,
+    per_action_restore: bool = False,
 ) -> Dict[str, Any]:
     """Restore ``state`` once, then dispatch ``actions`` in order.
 
@@ -400,7 +477,8 @@ def check_action_sequence(
     if executor is None:
         executor = _make_executor(env, workspace, config, fast=fast)
 
-    restore_state(env, workspace, config, state,
+    current_state = dict(state)
+    restore_state(env, workspace, config, current_state,
                        home_qpos=home_qpos,
                        on_held="attach",
                        executor=executor)
@@ -426,6 +504,21 @@ def check_action_sequence(
             overall_ok = False
             if short_circuit:
                 break
+        elif per_action_restore:
+            # Per-action restore: evolve the symbolic state via PDDL
+            # effects and re-restore the world from it.  Matches
+            # ``check_action`` (singular) — the path GNN training uses
+            # to label each (state, action) pair.  Avoids the
+            # cumulative-drift bug where sequential ``dispatch_action``
+            # calls leave placed blocks ~30 mm off their nominal
+            # rest pose; after several put-* steps the scene has
+            # block-on-block penetrations that ``is_collision_free``
+            # then aborts on downstream actions.
+            current_state = apply_action_effects(current_state, action)
+            restore_state(env, workspace, config, current_state,
+                               home_qpos=home_qpos,
+                               on_held="attach",
+                               executor=executor)
 
     return {
         "success": overall_ok,
