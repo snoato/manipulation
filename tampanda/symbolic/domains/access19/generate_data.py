@@ -283,9 +283,11 @@ def _setup_env(scratch_dir: Path):
     shelf_home = _solve_access19_staging(env, ws, cfg)
     lik = LinearIKPlanner(env, n_substeps=12, joint_check_steps=8)
     pick_fn = make_access19_pick_fn(env, executor, ws, cfg,
-                                            cube_half_z=cube_half, lik=lik)
+                                            cube_half_z=cube_half, lik=lik,
+                                            home_qpos=shelf_home)
     put_fn = make_access19_put_fn(env, executor, ws, cfg,
-                                          cube_half_z=cube_half, lik=lik)
+                                          cube_half_z=cube_half, lik=lik,
+                                          home_qpos=shelf_home)
     return env, ws, cfg, executor, pick_fn, put_fn, shelf_home
 
 

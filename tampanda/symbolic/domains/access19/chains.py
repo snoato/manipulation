@@ -88,6 +88,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
                             config: Access19Config,
                             cube_half_z: Optional[float] = None,
                             lik: Optional[LinearIKPlanner] = None,
+                            home_qpos: Optional[np.ndarray] = None,
                             ) -> PutFn:
     """Build the put_fn the bridge dispatches to for access-19.
 
@@ -135,14 +136,40 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         return None
 
     def _row_step_substeps(default: int) -> int:
-        """Inside-cubicle short-hop substep count.  In FAST mode the
-        executor teleports to ``path[-1]`` and never traverses the
-        path, so per-substep collision checks validate a trajectory
-        we don't execute.  Column-front blocking is caught by the
-        pre-filter in ``feasibility.py``.  Returns 1 in FAST (just
-        the goal-config check), default otherwise.
+        """In FAST mode the executor teleports to ``path[-1]`` and never
+        traverses the path, so per-substep collision checks validate a
+        trajectory we don't execute.  Returns 1 in FAST, default
+        otherwise.  Applied to row-step + approach + exit lerps.
         """
         return 1 if getattr(env, "_fast_mode", False) else default
+
+    def _finish_in_fast() -> bool:
+        """FAST-mode post-grasp/post-release short-circuit.
+
+        In FAST mode, after a successful grasp (pick) or release (put)
+        we skip the symmetric extraction lerps (lift + reverse row-
+        step + exit).  Argument: the descent path was already proven
+        collision-free, and the ascent path has a smaller envelope
+        (empty gripper for put; held cube held 4 cm above the cubicle
+        floor for pick — above the resting cubes' tops).  Teleports
+        the arm back to ``home_qpos`` (or staging-home if not set) so
+        the next chain starts from a known state.
+        """
+        if not getattr(env, "_fast_mode", False):
+            return False
+        if home_qpos is not None:
+            env.data.qpos[: len(home_qpos)] = np.asarray(
+                home_qpos, dtype=float
+            )
+            env.data.qvel[:] = 0.0
+            if env.controller is not None:
+                env.controller.stop()
+            mujoco.mj_forward(env.model, env.data)
+            if getattr(env, "_attached", None) is not None:
+                env._apply_attachment()
+                mujoco.mj_forward(env.model, env.data)
+        env.controller._advance_delta_override = 0.1
+        return True
 
     def _try_cartesian(target: np.ndarray, n_substeps: int):
         for q in _QUATS:
@@ -281,7 +308,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
             [col_x, front_face_y - 0.06, grasp_z + 0.02])
 
         # 1. Column-align approach (outside the open face).
-        path = _try_lerp(approach, n_substeps=20)
+        path = _try_lerp(approach, n_substeps=_row_step_substeps(20))
         if path is None:
             print("[access19 put_interior] approach plan failed")
             return False
@@ -320,6 +347,13 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         # retreat-plan failure leaves a partially-retracted arm, which
         # the next operation can plan from.
         _detach_and_open(obj_name)
+
+        # FAST short-circuit: descent path (with held cube) was already
+        # validated collision-free; the empty-gripper ascent has a
+        # strictly smaller envelope, so we can skip lift + reverse
+        # row-step + exit and teleport to staging-home.
+        if _finish_in_fast():
+            return True
 
         # 5. Lift 4 cm.
         retreat_z = grasp_z + 0.04
@@ -453,6 +487,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
                              config: Access19Config,
                              cube_half_z: Optional[float] = None,
                              lik: Optional[LinearIKPlanner] = None,
+                             home_qpos: Optional[np.ndarray] = None,
                              ) -> PickFn:
     """Mirror of :func:`make_access19_put_fn` for picks.
 
@@ -491,14 +526,40 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         return None
 
     def _row_step_substeps(default: int) -> int:
-        """Inside-cubicle short-hop substep count.  In FAST mode the
-        executor teleports to ``path[-1]`` and never traverses the
-        path, so per-substep collision checks validate a trajectory
-        we don't execute.  Column-front blocking is caught by the
-        pre-filter in ``feasibility.py``.  Returns 1 in FAST (just
-        the goal-config check), default otherwise.
+        """In FAST mode the executor teleports to ``path[-1]`` and never
+        traverses the path, so per-substep collision checks validate a
+        trajectory we don't execute.  Returns 1 in FAST, default
+        otherwise.  Applied to row-step + approach + exit lerps.
         """
         return 1 if getattr(env, "_fast_mode", False) else default
+
+    def _finish_in_fast() -> bool:
+        """FAST-mode post-grasp/post-release short-circuit.
+
+        In FAST mode, after a successful grasp (pick) or release (put)
+        we skip the symmetric extraction lerps (lift + reverse row-
+        step + exit).  Argument: the descent path was already proven
+        collision-free, and the ascent path has a smaller envelope
+        (empty gripper for put; held cube held 4 cm above the cubicle
+        floor for pick — above the resting cubes' tops).  Teleports
+        the arm back to ``home_qpos`` (or staging-home if not set) so
+        the next chain starts from a known state.
+        """
+        if not getattr(env, "_fast_mode", False):
+            return False
+        if home_qpos is not None:
+            env.data.qpos[: len(home_qpos)] = np.asarray(
+                home_qpos, dtype=float
+            )
+            env.data.qvel[:] = 0.0
+            if env.controller is not None:
+                env.controller.stop()
+            mujoco.mj_forward(env.model, env.data)
+            if getattr(env, "_attached", None) is not None:
+                env._apply_attachment()
+                mujoco.mj_forward(env.model, env.data)
+        env.controller._advance_delta_override = 0.1
+        return True
 
     def _try_cartesian(target: np.ndarray, n_substeps: int):
         for q in _QUATS:
@@ -601,7 +662,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         approach = np.array(
             [col_x, front_face_y - 0.06, grasp_z + 0.02])
 
-        path = _try_lerp(approach, n_substeps=20)
+        path = _try_lerp(approach, n_substeps=_row_step_substeps(20))
         if path is None:
             print("[access19 pick_interior] approach plan failed")
             return False
@@ -640,6 +701,14 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         # successful and any retreat-plan failure just leaves the
         # arm partially retracted with the block in hand.
         _close_and_attach(obj_name)
+
+        # FAST short-circuit: descent path was validated collision-
+        # free; the ascent with held cube (4 cm above the cubicle
+        # floor, i.e. above resting cubes) has a comparable envelope,
+        # so skip lift + reverse row-step + exit and teleport to
+        # staging-home.
+        if _finish_in_fast():
+            return True
 
         # Lift 4 cm.
         retreat_z = grasp_z + 0.04
