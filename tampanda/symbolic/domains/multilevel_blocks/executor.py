@@ -1763,29 +1763,36 @@ class MultilevelBlocksExecutor:
             qkey = tuple(np.round(used_quat, 6).tolist())
             cached_descent = probe_goal_q.get((qkey, "descend"))
             if cached_descent is not None:
-                import sys
-                _clean = self.env.is_collision_free(cached_descent)
-                print(f"  DEBUG put-upright @ {c_low_id}: "
-                           f"cache HIT, goal collision_free={_clean}",
-                           file=sys.stderr, flush=True)
                 start_q = self.env.data.qpos[:7].copy()
-                # Only collision-check the GOAL pose — fast mode has no
-                # physics simulation; the joint-lerp is the controller's
-                # interpolation that "happens" instantaneously via
-                # set_qpos.  An intermediate clipping in the lerp doesn't
-                # corrupt simulation state because no physics steps run
-                # between waypoints.  Earlier attempt to collision-check
-                # the lerp was over-conservative — it rejected paths
-                # whose ENDPOINTS were both clean but whose joint-space
-                # straight line briefly clipped (e.g. wrist swinging
-                # through a neighbour column on the way down).  Mirrors
-                # the column-align teleport (line 1714) which also only
-                # checks endpoints by construction.
+                # Goal-pose collision check — only need this in fast mode
+                # because no physics runs between waypoints; the joint-
+                # lerp itself can clip transiently without corrupting
+                # state.  If the GOAL clips a neighbour (happens at ix=6
+                # boundary cells where the LUT config's elbow posture was
+                # computed in an empty env), the cached config is unusable
+                # for THIS scene — fall through to the Cartesian-substep
+                # fallback below, which lets mink pick a scene-aware
+                # elbow posture per substep.
                 if self.env.is_collision_free(cached_descent):
                     res = ([start_q, cached_descent.copy()], used_quat)
         if res is None:
-            res = self._try_plan_to_pose(place_pose, [used_quat],
-                                                  n_substeps=fd_substeps)
+            # Cached teleport not available OR rejected by collision —
+            # fall back to Cartesian-substep IK.  At boundary cells (the
+            # ones the teleport rejects) mink's default 100-iter cap in
+            # fast mode is too tight to find a scene-aware elbow posture
+            # via the substep chain.  Bump to 500 iters per substep here
+            # (matches the full executor's typical convergence budget at
+            # these cells) so the fallback can actually succeed.  Costs
+            # ~250 ms extra per affected put-upright; only fires when
+            # the cached teleport doesn't work, so cells where the
+            # teleport succeeds keep the original sub-ms descent.
+            saved_iters = self.env.ik.max_iters
+            try:
+                self.env.ik.max_iters = max(saved_iters, 500)
+                res = self._try_plan_to_pose(place_pose, [used_quat],
+                                                      n_substeps=fd_substeps)
+            finally:
+                self.env.ik.max_iters = saved_iters
         if res is None:
             ee_now = self.env.data.site_xpos[self.ee_site_id].copy()
             self._err(
