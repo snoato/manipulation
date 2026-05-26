@@ -1762,6 +1762,13 @@ class MultilevelBlocksExecutor:
         if self._fast_column_align_substeps_halved():
             qkey = tuple(np.round(used_quat, 6).tolist())
             cached_descent = probe_goal_q.get((qkey, "descend"))
+            import sys
+            _clean = (self.env.is_collision_free(cached_descent)
+                          if cached_descent is not None else None)
+            print(f"  DEBUG put-upright @ {c_low_id}: "
+                       f"cached_descent={'PRESENT' if cached_descent is not None else 'MISSING'} "
+                       f"goal_collision_free={_clean}",
+                       file=sys.stderr, flush=True)
             if cached_descent is not None:
                 start_q = self.env.data.qpos[:7].copy()
                 # Goal-pose collision check — only need this in fast mode
