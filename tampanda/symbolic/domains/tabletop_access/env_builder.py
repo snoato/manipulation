@@ -98,6 +98,8 @@ def make_access_builder(
     cell_size: float = 0.06,
     base_height: float = 0.0,
     shelf_pos: Optional[Tuple[float, float, float]] = None,
+    n_uniform_blockers: Optional[int] = None,
+    blocker_half: Tuple[float, float, float] = (0.030, 0.030, 0.045),
 ) -> Tuple[ArmSceneBuilder, Workspace, TabletopAccessConfig]:
     """Build the HAL ``access`` scene.
 
@@ -138,18 +140,21 @@ def make_access_builder(
     Returns:
         ``(builder, workspace, config)``.
     """
-    ycb_items = ycb_items or [
-        # Default mix is short enough to fit in the floor
-        # compartment with gripper clearance above (no item taller
-        # than 6 cm).  Tall YCB items (mustard_bottle, cracker_box,
-        # sugar_box) caller-supplies if they want to test the
-        # tall-item case, accepting a possible reach loss for cells
-        # near the middle deck.
-        "meat_can", "tomato_soup_can", "tuna_can",
-        "gelatin_box", "pudding_box",
-    ]
-    if target_item not in ycb_items:
-        raise ValueError(f"target_item {target_item!r} not in ycb_items {ycb_items}")
+    if n_uniform_blockers is None:
+        ycb_items = ycb_items or [
+            # Short items only (no taller than ~5 cm) so each fits the
+            # floor compartment with gripper clearance.
+            "meat_can", "tomato_soup_can", "tuna_can",
+            "gelatin_box", "pudding_box",
+        ]
+        if target_item not in ycb_items:
+            raise ValueError(
+                f"target_item {target_item!r} not in ycb_items {ycb_items}")
+        n_objects = len(ycb_items)
+    else:
+        # Dataset roster: OoI + N uniform generic blocker boxes — all short
+        # and graspable (like access19's cubes), enough for many clutter.
+        n_objects = n_uniform_blockers + 1
 
     # Shelf body z = ``base_height`` so the bottom (floor) compartment
     # sits at that height in world frame.  Legs extend downward to the
@@ -167,7 +172,7 @@ def make_access_builder(
 
     cfg = TabletopAccessConfig(
         scene_variant="access",
-        n_objects=len(ycb_items),
+        n_objects=n_objects,
         cell_size=cell_size,
         shelf_pos=shelf_pos,
     )
@@ -188,18 +193,24 @@ def make_access_builder(
         # beside the shelf, not on a raised plate).
         bottom_plate=False,
     )
-    ycb_assets = list(make_ycb_proxy(ycb_items))
-    renamed: List[Asset] = []
-    for a in ycb_assets:
-        if a.asset_id == target_item:
-            renamed.append(Asset(
-                asset_id="ooi",
-                half_extents=a.half_extents,
-                color=a.color,
-                label=f"target ({target_item})",
-            ))
-        else:
-            renamed.append(a)
+    if n_uniform_blockers is None:
+        ycb_assets = list(make_ycb_proxy(ycb_items))
+        renamed: List[Asset] = []
+        for a in ycb_assets:
+            if a.asset_id == target_item:
+                renamed.append(Asset(
+                    asset_id="ooi",
+                    half_extents=a.half_extents,
+                    color=a.color,
+                    label=f"target ({target_item})",
+                ))
+            else:
+                renamed.append(a)
+    else:
+        renamed = [Asset(asset_id="ooi", half_extents=blocker_half,
+                         color=(0.15, 0.40, 0.90, 1.0), label="target (ooi)")]
+        renamed += list(make_generic_boxes(
+            "blocker", [blocker_half] * n_uniform_blockers))
     aset = AssetSet([shelf, *renamed])
 
     scratch_dir = Path(scratch_dir)

@@ -103,6 +103,46 @@ def fast_mode(env, executor):
         env._fast_mode = False
 
 
+def structurally_blocks(blocker_cell: str, target_cell: str) -> bool:
+    """Cheap structural test: does an object at ``blocker_cell`` occlude a
+    front pick/put of ``target_cell``?  Derived empirically (FULL=FAST,
+    `access_collision_probe.py`) — it IS the palm-+y gripper's swept
+    volume: the hand/link7 sweeping in from the open -y face (same column,
+    in front) plus the finger span sideways (adjacent column, front or
+    same row).  Same region only (levels don't occlude each other).
+
+    Used CONSTRUCTIVELY to place occluding blockers and to order plan
+    clearing; the constructed plan is still feasibility-validated, so a
+    minor rule imperfection is absorbed by reject+resample.
+    """
+    b, t = Cell.parse(blocker_cell), Cell.parse(target_cell)
+    if b.region != t.region:
+        return False
+    dx = abs(b.ix - t.ix)
+    if dx == 0:
+        return b.iy < t.iy                  # same column, in front
+    if dx == 1:
+        return b.iy <= t.iy                 # adjacent column, front or same row
+    return False
+
+
+def blocks_put(blocker_cell: str, target_cell: str) -> bool:
+    """Like ``structurally_blocks`` but for a PUT target — stricter: a
+    same-column object BEHIND the target also blocks it (the palm-+y wrist
+    extends back over the target during the place), per the feasibility
+    sweep (`access_feasibility_check.py`).  Used to keep relocation scratch
+    cells clear of the OoI's goal put."""
+    b, t = Cell.parse(blocker_cell), Cell.parse(target_cell)
+    if b.region != t.region:
+        return False
+    dx = abs(b.ix - t.ix)
+    if dx == 0:
+        return b.iy != t.iy                 # same column, front OR behind
+    if dx == 1:
+        return b.iy <= t.iy                 # adjacent, front or same row
+    return False
+
+
 def put_target(env, workspace: Workspace, obj_name: str, cell_id: str) -> np.ndarray:
     """World-frame resting centre for ``obj_name`` placed at ``cell_id``."""
     cell = Cell.parse(cell_id)
@@ -135,3 +175,35 @@ def check_action(env, workspace, executor, pick_fn, put_fn,
         with fast_mode(env, executor):
             return _run()
     return _run()
+
+
+def check_action_sequence(env, workspace, executor, pick_fn, put_fn,
+                          source_layout: Dict[str, str], actions, object_names,
+                          *, fast: bool, home_qpos=None):
+    """Validate a whole plan action-by-action.
+
+    Before each action the world is restored to the CURRENT symbolic
+    state (objects snapped to cells, held attached canonically) so every
+    check is history-independent, then the symbolic state is evolved by
+    the action.  Returns ``(ok, failed_action_or_None)``.
+    """
+    from tampanda.symbolic.domains.tabletop_access.state import restore_state
+    layout = dict(source_layout)
+    held = None
+    for action in actions:
+        state = {("occupied", c, o): True for o, c in layout.items()}
+        if held is not None:
+            state[("holding", held)] = True
+        restore_state(env, workspace, state, object_names,
+                      executor=executor, home_qpos=home_qpos, on_held="attach")
+        if not check_action(env, workspace, executor, pick_fn, put_fn,
+                            action, fast=fast):
+            return False, action
+        kind, obj, cell = action
+        if kind == "pick":
+            held = obj
+            layout.pop(obj, None)
+        else:
+            layout[obj] = cell
+            held = None
+    return True, None
