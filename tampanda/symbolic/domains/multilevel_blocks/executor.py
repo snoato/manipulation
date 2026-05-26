@@ -1762,12 +1762,12 @@ class MultilevelBlocksExecutor:
         if self._fast_column_align_substeps_halved():
             qkey = tuple(np.round(used_quat, 6).tolist())
             cached_descent = probe_goal_q.get((qkey, "descend"))
-            import sys
-            print(f"  DEBUG put-upright descent: qkey present in probe_goal_q? "
-                       f"{cached_descent is not None}; "
-                       f"all keys: {list(probe_goal_q.keys())[:3]}",
-                       file=sys.stderr, flush=True)
             if cached_descent is not None:
+                import sys
+                _clean = self.env.is_collision_free(cached_descent)
+                print(f"  DEBUG put-upright @ {c_low_id}: "
+                           f"cache HIT, goal collision_free={_clean}",
+                           file=sys.stderr, flush=True)
                 start_q = self.env.data.qpos[:7].copy()
                 # Only collision-check the GOAL pose — fast mode has no
                 # physics simulation; the joint-lerp is the controller's
