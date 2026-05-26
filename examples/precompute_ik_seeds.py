@@ -189,9 +189,29 @@ def _build_targets(cfg_dict: dict, max_iters: int
                     )
                 if region_name.startswith("stack_L"):
                     for qkey, q in upright_quats.items():
+                        # "upright" family — seeds the column-align IK
+                        # (and was previously used for descent too).
                         targets.append(
                             ("upright", cell.id, qkey,
                              cell_centre.copy(), q.copy(),
+                             _HOME_STACK.copy(), max_iters)
+                        )
+                        # "upright_descent" family (Phase 3.8) — seeds the
+                        # final-descent IK at the EE pose where
+                        # put_upright would place the block.  Target z is
+                        # ``c_low.z + cube_size/2 + 0.04`` (executor:1475;
+                        # cube_size/2 = pitch from c_low to anchor centroid
+                        # between c_low and c_high, +0.04 = link7 clearance
+                        # above table_top).  Caching at the descent z
+                        # avoids the 16cm seed-vs-target mismatch that was
+                        # making mink's 100-iter cap fail at boundary
+                        # cells (ix=6 in 10×10 stack grid).
+                        descent_target = cell_centre + np.array([
+                            0.0, 0.0, 0.5 * cfg.cube_size + 0.04,
+                        ])
+                        targets.append(
+                            ("upright_descent", cell.id, qkey,
+                             descent_target.copy(), q.copy(),
                              _HOME_STACK.copy(), max_iters)
                         )
     return targets

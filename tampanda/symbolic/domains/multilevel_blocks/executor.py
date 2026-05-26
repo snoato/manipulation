@@ -1557,9 +1557,20 @@ class MultilevelBlocksExecutor:
             try:
                 lut = self._ik_seed_lut
                 if lut is not None:
-                    if lut.has(c_low_id, "upright", q):
+                    # Pick the LUT family for this phase.  Phase 3.8 added
+                    # "upright_descent" (cached at the EE descent z) so the
+                    # descent IK has a near-target seed.  For backwards
+                    # compatibility with LUTs that pre-date this family,
+                    # fall back to "upright" when "upright_descent" is
+                    # absent — that matches the pre-3.8 behaviour exactly.
+                    if label == "descend" and lut.has(
+                            c_low_id, "upright_descent", q):
+                        family = "upright_descent"
+                    else:
+                        family = "upright"
+                    if lut.has(c_low_id, family, q):
                         # LUT hit: seed + 15-iter converge.
-                        arm_q = lut.lookup(c_low_id, "upright", q)
+                        arm_q = lut.lookup(c_low_id, family, q)
                         self.env.data.qpos[:7] = arm_q
                         self.env.data.qvel[:] = 0.0
                         mujoco.mj_forward(self.env.model, self.env.data)
