@@ -1762,22 +1762,6 @@ class MultilevelBlocksExecutor:
         if self._fast_column_align_substeps_halved():
             qkey = tuple(np.round(used_quat, 6).tolist())
             cached_descent = probe_goal_q.get((qkey, "descend"))
-            import sys
-            if cached_descent is not None:
-                qpos_save = self.env.data.qpos.copy()
-                self.env.data.qpos[:7] = cached_descent
-                mujoco.mj_forward(self.env.model, self.env.data)
-                contacts = []
-                for i in range(self.env.data.ncon):
-                    c = self.env.data.contact[i]
-                    g1 = mujoco.mj_id2name(self.env.model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1)
-                    g2 = mujoco.mj_id2name(self.env.model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2)
-                    if c.dist < -0.0005:
-                        contacts.append(f"{g1}↔{g2}({c.dist*1000:.1f}mm)")
-                self.env.data.qpos[:] = qpos_save
-                mujoco.mj_forward(self.env.model, self.env.data)
-                print(f"  DEBUG put-upright @ {c_low_id}: contacts={contacts[:5]}",
-                           file=sys.stderr, flush=True)
             if cached_descent is not None:
                 start_q = self.env.data.qpos[:7].copy()
                 # Goal-pose collision check — only need this in fast mode

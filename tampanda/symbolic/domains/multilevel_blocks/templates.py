@@ -607,13 +607,18 @@ def compound(rng: np.random.Generator, *,
 
     # Curated substructure builders that fit in ~3x3 footprint.
     # Upright substructures (upright_bridges, tower_on_bridge) were
-    # previously excluded due to put_upright failures in the FAST
-    # executor.  Those failures are gone after commits de4cf03 (LUT
-    # speedup), 330c88c (prefilter casing) and d07d72a (LUT lookup
-    # casing); re-enabled so the L5 compound template properly subsumes
-    # L4's upright vocabulary and becomes a real compositional OOD probe.
-    choices = ["cube_tower", "long_pyramid",
-                  "tower_on_bridge", "upright_bridges"]
+    # excluded historically due to put_upright failures in the FAST
+    # executor.  Those failures are mostly gone after Phase 3.7/3.8,
+    # except at boundary stack cells (ix >= 5) where the LUT's cached
+    # arm posture can clip neighbour substructures.  Bias placement so
+    # upright variants land at LEFT-half anchors (ix < 5) where the
+    # fast IK is reliable; right-half anchors get cube/pyramid variants
+    # most of the time, occasionally upright (10%) — let the
+    # generator's reject-and-retry handle the failures so L5 still has
+    # some right-half upright samples in the dataset.
+    _UPRIGHT_CHOICES = ["tower_on_bridge", "upright_bridges"]
+    _CUBE_CHOICES = ["cube_tower", "long_pyramid"]
+    _RIGHT_HALF_UPRIGHT_PROB = 0.10  # weak chance per right-half anchor
 
     # Aggregate.
     alloc = _PartsAllocator(cfg)
@@ -625,7 +630,16 @@ def compound(rng: np.random.Generator, *,
     long_idx = 0
     subs: List[str] = []
     for (sa_ix, sa_iy) in sub_anchors:
-        choice = str(rng.choice(choices))
+        if sa_ix >= 5:
+            # Right-half anchor: strongly bias toward non-upright variants
+            # to avoid the LUT-cached-posture clipping issue.
+            if rng.random() < _RIGHT_HALF_UPRIGHT_PROB:
+                choice = str(rng.choice(_UPRIGHT_CHOICES))
+            else:
+                choice = str(rng.choice(_CUBE_CHOICES))
+        else:
+            # Left-half anchor: uniform across all 4 variants.
+            choice = str(rng.choice(_UPRIGHT_CHOICES + _CUBE_CHOICES))
         if choice == "cube_tower":
             h = int(rng.integers(2, min(cfg.stack_grid_cells[2], 4) + 1))
             sub = cube_tower(h, sa_ix, sa_iy, cfg=cfg,

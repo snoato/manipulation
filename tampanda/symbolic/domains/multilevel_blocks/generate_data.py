@@ -743,7 +743,19 @@ def _sample_template(
             ix = int(rng.integers(1, cells_x - 4))
             iy = _safe_iy(rng, cfg)
             return upright_bridges(ix, iy, cfg=cfg)
-        ix = int(rng.integers(0, cells_x - 7))
+        # Bias ix strongly toward 0 — the second bridge sits at ix+4,
+        # so ix=0 puts both bridges in the proven-feasible left-half
+        # ix∈[0,4].  Higher ix puts the second bridge at the ix=6+
+        # boundary where the fast executor's cached IK posture clips.
+        # Let some right-half samples slip through (10%) so the dataset
+        # still has variety; rejected ones get retried.
+        r = float(rng.random())
+        if r < 0.70:
+            ix = 0
+        elif r < 0.90:
+            ix = 1
+        else:
+            ix = int(rng.integers(2, cells_x - 7))
         iy = _safe_iy(rng, cfg)
         return double_bridges(ix, iy, cfg=cfg)
 
@@ -908,7 +920,12 @@ def _generate_split(
         stats = _init_stats()
         t_start = time.time()
         config_num = config_offset
-        max_attempts = count * 30
+        # 60× retry budget per accepted problem.  Was 30; bumped so L5
+        # upright templates (compound w/ right-half upright sub or
+        # double_bridges with high ix), which reject ~91 % of the time
+        # due to LUT-cached-posture clipping at boundary stack cells,
+        # still get enough samples through to fill the per-level quota.
+        max_attempts = count * 60
         while stats["accepted"] < count and stats["attempts"] < max_attempts:
             stats["attempts"] += 1
             config_num += 1
@@ -973,7 +990,12 @@ def _worker(worker_id: int, split: str, start_idx: int, count: int,
 
         stats = _init_stats()
         config_num = start_idx
-        max_attempts = count * 30  # safety cap so an impossible level
+        # 60× retry budget per accepted problem.  Was 30; bumped so L5
+        # upright templates (compound w/ right-half upright sub or
+        # double_bridges with high ix), which reject ~91 % of the time
+        # due to LUT-cached-posture clipping at boundary stack cells,
+        # still get enough samples through to fill the per-level quota.
+        max_attempts = count * 60  # safety cap so an impossible level
                                           # can't loop forever
         while stats["accepted"] < count and stats["attempts"] < max_attempts:
             stats["attempts"] += 1
