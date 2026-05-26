@@ -82,6 +82,9 @@ from tampanda.symbolic.domains.multilevel_blocks.templates import (
     multi_tower,
     oblong_tower,
     random_mix,
+    simple_long_rotate,
+    simple_long_x,
+    simple_upright_pickput,
     staircase,
     tower_on_bridge,
     upright_bridges,
@@ -112,6 +115,9 @@ _DEFAULT_SEED = 42
 
 _TEMPLATE_NAMES = (
     "cube_pick_put",       # L0
+    "simple_long_x",       # L0 — primitive exposure: put-long-x
+    "simple_upright_pickput",  # L1 — primitive: put-upright + make-upright-from-x
+    "simple_long_rotate",  # L1 — primitive: put-long-y + turn-long-x-to-y
     "cube_tower",          # L1
     "oblong_tower",        # L2 (same-orient) / L3 (orient-change)
     "long_pyramid",        # L2
@@ -127,8 +133,13 @@ _TEMPLATE_NAMES = (
 # Map each difficulty level to its template options.  Used by
 # --curriculum-spec to filter templates per level.
 _LEVELS: Dict[int, List[str]] = {
-    0: ["cube_pick_put"],
-    1: ["cube_tower"],                                  # h=2..3
+    # L0 / L1 now include primitive-exposure templates that exercise the
+    # L4 motion primitives (put-upright, make-upright-from-x, put-long-x,
+    # put-long-y, turn-long-x-to-y) in 2-3 action single-block problems,
+    # so the model sees these primitives during easy-curriculum training
+    # before encountering them inside L4's denser bridge structures.
+    0: ["cube_pick_put", "simple_long_x"],
+    1: ["cube_tower", "simple_upright_pickput", "simple_long_rotate"],
     2: ["oblong_tower", "long_pyramid"],                # same-orient oblong
     3: ["oblong_tower", "cube_tower"],                  # h=4, orient-change
     4: ["upright_bridges", "tower_on_bridge"],          # FULL executor only
@@ -685,6 +696,37 @@ def _sample_template(
         ix = int(rng.integers(1, cells_x - 1))
         iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
         return cube_pick_put(ix, iy, cfg=cfg)
+
+    if choice == "simple_long_x":
+        # 3-cell long block along x — needs ix..ix+2 to fit.  Bias to
+        # left-half (ix < 5) so put-long-x stays in the proven-feasible
+        # range; right-half (ix >= 5) still allowed but biased low.
+        if rng.random() < 0.85:
+            ix = int(rng.integers(1, 4))   # ix ∈ {1, 2, 3}
+        else:
+            ix = int(rng.integers(4, cells_x - 3))
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_long_x(ix, iy, cfg=cfg)
+
+    if choice == "simple_upright_pickput":
+        # Single upright oblong at (ix, iy) spanning L0+L1.  Bias toward
+        # left-half ix where put-upright is reliable in fast mode.
+        if rng.random() < 0.85:
+            ix = int(rng.integers(1, 5))
+        else:
+            ix = int(rng.integers(5, cells_x - 1))
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 2)
+        return simple_upright_pickput(ix, iy, cfg=cfg)
+
+    if choice == "simple_long_rotate":
+        # Long block placed flat-y along (ix, iy..iy+2).  Bias toward
+        # left-half ix and lower iy so the descent has room.
+        if rng.random() < 0.85:
+            ix = int(rng.integers(1, 5))
+        else:
+            ix = int(rng.integers(5, cells_x - 1))
+        iy = _safe_iy(rng, cfg, max_iy_cap=cells_y - 4)
+        return simple_long_rotate(ix, iy, cfg=cfg)
 
     if choice == "cube_tower":
         if level is not None and level <= 1:

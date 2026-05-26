@@ -375,6 +375,93 @@ def cube_pick_put(ix: int, iy: int, *,
     )
 
 
+# ---------------------------------------------------------------------------
+# Primitive-exposure templates — single-block "lessons" that teach a model
+# the L4 motion primitives (put-upright, make-upright-from-x, put-long-x,
+# put-long-y, turn-long-x-to-y) in isolation, in 2-3 action problems.
+# Added at L0 / L1 so the training distribution covers these primitives
+# at low difficulty before they appear inside L4's denser compositions.
+# ---------------------------------------------------------------------------
+
+
+def simple_long_x(ix: int, iy: int, *,
+                       cfg: Optional[MultilevelBlocksConfig] = None,
+                       start_idx: int = 0) -> Template:
+    """L0: a single long block placed flat-x at (ix..ix+2, iy).
+
+    Plan = 2 actions: pick-long-x, put-long-x.
+    """
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(start_idx)
+    s_cells = alloc.alloc(3, 1)
+    return Template(
+        name=f"simple_long_x_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix,   iy),
+                                  _stack(0, ix+1, iy),
+                                  _stack(0, ix+2, iy)],
+                                 "flat-x")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-x")],
+        build_order=[block],
+        metadata={"difficulty": 0, "anchor": (ix, iy)},
+    )
+
+
+def simple_upright_pickput(ix: int, iy: int, *,
+                                 cfg: Optional[MultilevelBlocksConfig] = None,
+                                 oblong_start: int = 0) -> Template:
+    """L1: a single oblong picked flat-x, rotated upright, placed at
+    (ix, iy) spanning L0 + L1.
+
+    Plan = 3 actions: pick-flat-x, make-upright-from-x, put-upright.
+    """
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = oblong_block_name(oblong_start)
+    s_cells = alloc.alloc(2, 1)
+    return Template(
+        name=f"simple_upright_pickput_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy), _stack(1, ix, iy)],
+                                 "upright")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-x")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
+def simple_long_rotate(ix: int, iy: int, *,
+                            cfg: Optional[MultilevelBlocksConfig] = None,
+                            long_start: int = 0) -> Template:
+    """L1: a single long block picked flat-x, rotated to flat-y, placed
+    along y at (ix, iy..iy+2).
+
+    Plan = 3 actions: pick-long-x, turn-long-x-to-y, put-long-y.
+    """
+    if cfg is None:
+        cfg = MultilevelBlocksConfig()
+    alloc = _PartsAllocator(cfg)
+    block = long_block_name(long_start)
+    s_cells = alloc.alloc(3, 1)
+    return Template(
+        name=f"simple_long_rotate_anchor({ix},{iy})",
+        goal_placements=[(block,
+                                 [_stack(0, ix, iy),
+                                  _stack(0, ix, iy+1),
+                                  _stack(0, ix, iy+2)],
+                                 "flat-y")],
+        source_placements=[(block,
+                                  _cells_xy_to_ids(s_cells), "flat-x")],
+        build_order=[block],
+        metadata={"difficulty": 1, "anchor": (ix, iy)},
+    )
+
+
 def multi_tower(rng: np.random.Generator, *,
                    cfg: Optional[MultilevelBlocksConfig] = None,
                    n_towers: int = 3, height_range: Tuple[int, int] = (2, 4),
