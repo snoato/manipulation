@@ -1777,20 +1777,17 @@ class MultilevelBlocksExecutor:
                     res = ([start_q, cached_descent.copy()], used_quat)
         if res is None:
             # Cached teleport not available OR rejected by collision —
-            # fall back to Cartesian-substep IK.  At boundary cells (the
-            # ones the teleport rejects) mink's default 100-iter cap in
-            # fast mode is too tight to find a scene-aware elbow posture
-            # via the substep chain.  Bump to 500 iters per substep here
-            # (matches the full executor's typical convergence budget at
-            # these cells) so the fallback can actually succeed.  Costs
-            # ~250 ms extra per affected put-upright; only fires when
-            # the cached teleport doesn't work, so cells where the
-            # teleport succeeds keep the original sub-ms descent.
+            # fall back to Cartesian-substep IK with the FULL executor's
+            # settings (14 substeps, 1000 iters) so the fallback at
+            # boundary cells (ix=6+) actually succeeds.  We know from
+            # the FULL executor's prior runs that those cells ARE
+            # reachable with this budget.  Costs ~500 ms extra per
+            # affected put-upright; only fires on cache miss / collision.
             saved_iters = self.env.ik.max_iters
             try:
-                self.env.ik.max_iters = max(saved_iters, 500)
+                self.env.ik.max_iters = max(saved_iters, 1000)
                 res = self._try_plan_to_pose(place_pose, [used_quat],
-                                                      n_substeps=fd_substeps)
+                                                      n_substeps=14)
             finally:
                 self.env.ik.max_iters = saved_iters
         if res is None:
