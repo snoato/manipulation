@@ -1748,8 +1748,37 @@ class MultilevelBlocksExecutor:
         place_pose = np.array([anchor[0] - held_off[0],
                                   anchor[1] - held_off[1],
                                   ee_z])
-        res = self._try_plan_to_pose(place_pose, [used_quat],
-                                              n_substeps=fd_substeps)
+        # Phase 3.8 (fast-mode only): reuse the converged goal_q the probe
+        # already computed for this exact (cell, yaw, descend) target —
+        # same teleport pattern as column-align above.  The probe seeded
+        # mink with the LUT "upright_descent" entry (a config AT the
+        # descent z, with the right elbow posture), so its converged
+        # goal_q is the right place_pose arm config.  Without this reuse,
+        # plan_to_pose re-runs Cartesian-substep IK from the column-align
+        # config (16 cm above) — mink with max_iters=100 can't bridge
+        # that at boundary cells (ix=6+) and the chain fails despite the
+        # geometry being feasible.
+        res = None
+        if self._fast_column_align_substeps_halved():
+            qkey = tuple(np.round(used_quat, 6).tolist())
+            cached_descent = probe_goal_q.get((qkey, "descend"))
+            if cached_descent is not None:
+                start_q = self.env.data.qpos[:7].copy()
+                # Collision-check the joint-lerp before committing.
+                clean = self.env.is_collision_free(cached_descent)
+                if clean:
+                    for j in range(1, fd_substeps + 1):
+                        alpha = j / fd_substeps
+                        q_mid = ((1 - alpha) * start_q
+                                       + alpha * cached_descent)
+                        if not self.env.is_collision_free(q_mid):
+                            clean = False
+                            break
+                if clean:
+                    res = ([start_q, cached_descent.copy()], used_quat)
+        if res is None:
+            res = self._try_plan_to_pose(place_pose, [used_quat],
+                                                  n_substeps=fd_substeps)
         if res is None:
             ee_now = self.env.data.site_xpos[self.ee_site_id].copy()
             self._err(
