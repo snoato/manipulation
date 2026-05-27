@@ -46,6 +46,9 @@ from tampanda.symbolic.workspace import Cell, Workspace
 from tampanda.symbolic.domains.access19.env_builder import (
     Access19Config,
 )
+from tampanda.symbolic.domains.access19.ik_seed_lut import (
+    Access19IKSeedLUT, replay_cartesian_trajectory,
+)
 
 
 _FRONT_QUAT = np.array([-0.5, 0.5, 0.5, 0.5])
@@ -89,6 +92,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
                             cube_half_z: Optional[float] = None,
                             lik: Optional[LinearIKPlanner] = None,
                             home_qpos: Optional[np.ndarray] = None,
+                            seed_lut: Optional[Access19IKSeedLUT] = None,
                             ) -> PutFn:
     """Build the put_fn the bridge dispatches to for access-19.
 
@@ -387,7 +391,30 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
 
     # --- shelf_top put --------------------------------------------------
 
-    def _put_deck(obj_name: str, target_pos: np.ndarray) -> bool:
+    def _try_traverse_lut(target: np.ndarray, cell_id: Optional[str]):
+        """LUT-augmented horizontal traverse at safe_z (FAST only).
+
+        Item 1 only: short-circuit when every quat for ``cell_id`` is
+        unreachable in the empty-env LUT.  Otherwise dispatch to
+        natural ``_try_cartesian`` so the converged endpoint qpos
+        lands in the same null-space basin the descent lerp expects.
+
+        Items 2 and 3 were tried but caused 16-19% downstream lerp
+        failures: the LUT's substep[-1] qpos (item 2 replay) and
+        priority-reordered quat outputs (item 3) land in a different
+        null-space basin than the chain's natural mink for the same
+        EE pose, so the subsequent descent lerp couldn't continue
+        cleanly.  Kept the LUT for short-circuit only.
+        """
+        if (getattr(env, "_fast_mode", False)
+                and seed_lut is not None
+                and cell_id is not None
+                and seed_lut.all_unreachable(cell_id)):
+            return None
+        return _try_cartesian(target, n_substeps=16)
+
+    def _put_deck(obj_name: str, target_pos: np.ndarray,
+                    cell_id: Optional[str] = None) -> bool:
         # 0. Withdraw to a clean pose in front of the cubicle.  The
         # vertical lift in phase 1 must start from a pose whose xy is
         # OUTSIDE the cubicle's footprint — otherwise the held block
@@ -423,9 +450,13 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
 
         # 2. Horizontal traverse at safe_z.  Cartesian-only — the
         # Cartesian straight line must stay above the shelf top wall;
-        # joint-lerp can swing the wrist through it.
-        p = _try_cartesian(np.array([col_x, target_y, safe_z]),
-                              n_substeps=16)
+        # joint-lerp can swing the wrist through it.  When a seed
+        # LUT is provided, FAST mode replays the empty-env-recorded
+        # substep trajectory against the current env's collisions
+        # (skips mink), short-circuits unreachable cells, and orders
+        # quats by per-cell historical success.
+        p = _try_traverse_lut(
+            np.array([col_x, target_y, safe_z]), cell_id)
         if p is None:
             env.controller._advance_delta_override = 0.1
             print("[access19 put_deck] traverse plan failed")
@@ -473,7 +504,7 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         if cell.region == "shelf_interior":
             return _put_interior(obj_name, target_pos)
         if cell.region == "shelf_top":
-            return _put_deck(obj_name, target_pos)
+            return _put_deck(obj_name, target_pos, cell_id=cell_id)
         raise ValueError(
             f"access19 put_fn: unknown region {cell.region!r}")
 
@@ -488,6 +519,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
                              cube_half_z: Optional[float] = None,
                              lik: Optional[LinearIKPlanner] = None,
                              home_qpos: Optional[np.ndarray] = None,
+                             seed_lut: Optional[Access19IKSeedLUT] = None,
                              ) -> PickFn:
     """Mirror of :func:`make_access19_put_fn` for picks.
 
@@ -742,7 +774,24 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
 
     # --- shelf_top pick -------------------------------------------------
 
-    def _pick_deck(obj_name: str, source_pos: np.ndarray) -> bool:
+    def _try_traverse_lut(target: np.ndarray, cell_id: Optional[str]):
+        """LUT-augmented horizontal traverse at safe_z — pick-side
+        mirror.  Item 1 only: short-circuit truly unreachable cells;
+        otherwise run natural Cartesian (with lerp fallback) so
+        downstream descent sees the natural-basin qpos.
+        """
+        if (getattr(env, "_fast_mode", False)
+                and seed_lut is not None
+                and cell_id is not None
+                and seed_lut.all_unreachable(cell_id)):
+            return None
+        p = _try_cartesian(target, n_substeps=16)
+        if p is None:
+            p = _try_lerp(target, n_substeps=16)
+        return p
+
+    def _pick_deck(obj_name: str, source_pos: np.ndarray,
+                     cell_id: Optional[str] = None) -> bool:
         if not _withdraw_to_cubicle_front():
             return False
 
@@ -777,19 +826,12 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
 
         env.controller._advance_delta_override = 0.01
 
-        # Horizontal traverse — Cartesian first (preserves orientation
-        # for repeatable behaviour); lerp fallback is safe here because
-        # the hand is EMPTY on the outbound pick (no held block to
-        # sweep through the top wall — only the gripper itself, which
-        # the env's collision check will reject anyway).  Cartesian-
-        # only failed at certain edge-column targets (col_5) when the
-        # IK basin from staging diverged from the basin reached during
-        # symmetric put_deck calls.
-        p = _try_cartesian(np.array([col_x, target_y, safe_z]),
-                              n_substeps=16)
-        if p is None:
-            p = _try_lerp(np.array([col_x, target_y, safe_z]),
-                              n_substeps=16)
+        # Horizontal traverse — LUT-augmented when available.  When
+        # the LUT is absent (no precompute), falls back to the
+        # original Cartesian-first / lerp-fallback combo (the picked-
+        # block is empty here, so both are safe).
+        p = _try_traverse_lut(
+            np.array([col_x, target_y, safe_z]), cell_id)
         if p is None:
             env.controller._advance_delta_override = 0.1
             print("[access19 pick_deck] traverse plan failed")
@@ -881,7 +923,7 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
             if cell.region == "shelf_interior":
                 return _pick_interior(obj_name, source_pos)
             if cell.region == "shelf_top":
-                return _pick_deck(obj_name, source_pos)
+                return _pick_deck(obj_name, source_pos, cell_id=cell_id)
             raise ValueError(
                 f"access19 pick_fn: unknown region {cell.region!r}")
         finally:

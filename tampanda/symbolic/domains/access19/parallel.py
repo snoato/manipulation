@@ -30,15 +30,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _WORKER_STATE: Dict[str, Any] = {}
 
 
-def _worker_init(fast: bool) -> None:
+def _worker_init(fast: bool, build_lut: bool = True) -> None:
     """Per-worker setup: build env + chains + executor + home pose.
 
     Runs ONCE per worker process at pool startup.  All subsequent tasks
-    on this worker reuse the same env / chains.
+    on this worker reuse the same env / chains.  When ``build_lut`` is
+    true (default), also precomputes the deck-traverse seed LUT
+    (item 1 short-circuit) — adds ~45 s startup but eliminates the
+    "all-quats-unreachable" tail in eval.
     """
     from tampanda.symbolic.domains.access19 import (
         apply_runtime_tweaks, make_access19_builder,
         make_access19_pick_fn, make_access19_put_fn,
+    )
+    from tampanda.symbolic.domains.access19.ik_seed_lut import (
+        Access19IKSeedLUT,
     )
     from tampanda.symbolic.domains.access19.reachability import (
         _build_executor, _solve_access19_staging,
@@ -60,12 +66,30 @@ def _worker_init(fast: bool) -> None:
 
     shelf_home = _solve_access19_staging(env, ws, cfg)
     lik = LinearIKPlanner(env, n_substeps=12, joint_check_steps=8)
+
+    seed_lut = None
+    if build_lut:
+        # Park all 19 physical bodies far away so the empty-env
+        # precompute sees a clean shelf.
+        park_pos = np.array([2.0, 2.0, 2.0])
+        for name in ([f"blocker_{i}" for i in range(18)] + ["ooi"]):
+            try:
+                env.set_object_pose(name, park_pos)
+            except Exception:
+                pass
+        mujoco.mj_forward(env.model, env.data)
+        seed_lut = Access19IKSeedLUT()
+        seed_lut.precompute(env, ws, cfg, lik, shelf_home,
+                                  cube_half_z=cube_half)
+
     pick_fn = make_access19_pick_fn(env, executor, ws, cfg,
                                             cube_half_z=cube_half, lik=lik,
-                                            home_qpos=shelf_home)
+                                            home_qpos=shelf_home,
+                                            seed_lut=seed_lut)
     put_fn = make_access19_put_fn(env, executor, ws, cfg,
                                           cube_half_z=cube_half, lik=lik,
-                                          home_qpos=shelf_home)
+                                          home_qpos=shelf_home,
+                                          seed_lut=seed_lut)
 
     object_names = [f"blocker_{i}" for i in range(18)] + ["ooi"]
 

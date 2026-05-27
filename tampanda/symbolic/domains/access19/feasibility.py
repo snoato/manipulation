@@ -134,6 +134,26 @@ def _occupied_cells(state: Dict[Tuple, bool]) -> set:
     }
 
 
+def _occupant_at(state: Dict[Tuple, bool], cell_id: str) -> Optional[str]:
+    """Return the object name occupying ``cell_id``, or ``None`` if empty."""
+    for key, value in state.items():
+        if not value or not isinstance(key, tuple) or len(key) != 3:
+            continue
+        if key[0] == "occupied" and key[1] == cell_id:
+            return str(key[2])
+    return None
+
+
+def _held_object(state: Dict[Tuple, bool]) -> Optional[str]:
+    """Return the currently-held object name, or ``None`` if empty."""
+    for key, value in state.items():
+        if not value or not isinstance(key, tuple) or len(key) != 2:
+            continue
+        if key[0] == "holding":
+            return str(key[1])
+    return None
+
+
 def _column_front_blocked(occupied: set, cell_id: str) -> bool:
     """True iff the chain's interior approach to ``cell_id`` is blocked
     by a cube at the same column with a smaller (closer-to-front)
@@ -163,17 +183,52 @@ def _column_front_blocked(occupied: set, cell_id: str) -> bool:
 
 
 def _prefilter_reject(
-    action: Tuple, occupied: set,
+    action: Tuple, state: Dict[Tuple, bool],
 ) -> bool:
-    """Fast-mode symbolic pre-filter — currently just the column-front
-    occlusion check for interior picks and puts.  Returns True iff the
-    action is provably infeasible from ``occupied`` and can be
-    short-circuited without restoring state or running the chain.
+    """Fast-mode symbolic pre-filter.  Returns True iff the action is
+    provably infeasible from ``state`` and can be short-circuited
+    without restoring state or running the chain.
+
+    Catches:
+      * Column-front occlusion (interior cells) — chain would fail in
+        the first row-step lerp.
+      * Held-state mismatch — pick while holding anything, put while
+        not holding the target object.  Chain would fail at attach /
+        detach.
+      * Target-cell already occupied (put) — chain would fail when
+        the descent collides with the resident cube (or pass through
+        and place on top of it, which the chain rejects via the
+        cube-cube collision check).
+      * Source-cell not occupied by target obj (pick) — chain would
+        descend onto empty air and grasp nothing.
     """
     if not action or action[0] not in ("pick", "put"):
         return False
-    _, _, cell_id = action
-    return _column_front_blocked(occupied, cell_id)
+    occupied = _occupied_cells(state)
+    held = _held_object(state)
+    verb, obj, cell_id = action[0], action[1], action[2]
+
+    # Column-front occlusion — covers both pick and put for interior.
+    if _column_front_blocked(occupied, cell_id):
+        return True
+
+    if verb == "pick":
+        # Must be holding nothing.
+        if held is not None:
+            return True
+        # The target cell must be occupied by ``obj``.
+        if _occupant_at(state, cell_id) != obj:
+            return True
+        return False
+
+    # verb == "put"
+    # Must be holding the target object.
+    if held != obj:
+        return True
+    # The target cell must be empty.
+    if _occupant_at(state, cell_id) is not None:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +304,7 @@ def check_action(
     # under chain semantics (no false negatives) — see
     # ``_column_front_blocked``.  FULL mode keeps full ground-truth
     # semantics and skips the filter.
-    if fast and _prefilter_reject(action, _occupied_cells(state)):
+    if fast and _prefilter_reject(action, state):
         return {
             "success": False,
             "elapsed_s": time.perf_counter() - t_start,
@@ -313,12 +368,15 @@ def check_action_sequence(
     # FAST never drifts so the snap is a no-op there.  Held objects
     # are skipped (tracked separately via the attachment hook).
     running_layout: Dict[str, str] = {}
+    running_held: Optional[str] = None
     for key, value in state.items():
         if not value:
             continue
         if isinstance(key, tuple) and len(key) == 3 and key[0] == "occupied":
             _, cell_id, obj = key
             running_layout[obj] = cell_id
+        elif isinstance(key, tuple) and len(key) == 2 and key[0] == "holding":
+            running_held = str(key[1])
 
     per_action: List[Dict[str, Any]] = []
     overall_ok = True
@@ -351,9 +409,16 @@ def check_action_sequence(
             # initial ``state`` — keeps the check honest as the
             # sequence evolves.
             prefiltered = False
-            if fast and _prefilter_reject(
-                action, set(running_layout.values())
-            ):
+            # Build a synthetic state dict from the running layout +
+            # held so the pre-filter sees the same shape as the
+            # top-level ``check_action`` path.
+            _seq_state: Dict[Tuple, bool] = {
+                ("occupied", _cid, _obj): True
+                for _obj, _cid in running_layout.items()
+            }
+            if running_held is not None:
+                _seq_state[("holding", running_held)] = True
+            if fast and _prefilter_reject(action, _seq_state):
                 ok = False
                 err = None
                 prefiltered = True
@@ -365,9 +430,11 @@ def check_action_sequence(
                         if action[0] == "pick":
                             _, _obj, _ = action
                             running_layout.pop(_obj, None)
+                            running_held = _obj
                         elif action[0] == "put":
                             _, _obj, _cell_id = action
                             running_layout[_obj] = _cell_id
+                            running_held = None
                 except Exception as exc:
                     ok = False
                     err = f"{type(exc).__name__}: {exc}"
