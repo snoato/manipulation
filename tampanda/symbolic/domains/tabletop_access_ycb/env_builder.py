@@ -100,6 +100,39 @@ class TabletopAccessYcbConfig:
     match_identity_iquat: bool = True
 
 
+def _materialise_ycb_mesh(ycb_source: str, body_id: str, scratch_dir: Path) -> Path:
+    """Resolve the cached YCB MJCF and rewrite it so the SceneBuilder injects
+    a named ``{body_id}_freejoint``.
+
+    The YCB downloader's generated MJCF carries an **unnamed** ``<joint
+    type="free">``; the builder only injects its named freejoint when the
+    body has none, so that unnamed joint leaves ``attach_object_to_ee``
+    unable to find ``{body}_freejoint``.  We strip the free joint (the
+    builder then injects the named one) and pin an absolute ``meshdir`` so
+    the mesh ``file=`` paths still resolve from the cache dir.
+    """
+    import xml.etree.ElementTree as ET
+    from tampanda.scenes.assets.downloaders.ycb import YCBDownloader
+
+    src = YCBDownloader().get(ycb_source)        # cached path (downloads if needed)
+    cache_dir = Path(src).parent
+    tree = ET.parse(src)
+    root = tree.getroot()
+    compiler = root.find("compiler")
+    if compiler is None:
+        compiler = ET.SubElement(root, "compiler")
+    compiler.set("meshdir", str(cache_dir.resolve()))
+    for body in root.iter("body"):
+        for child in list(body):
+            if child.tag == "freejoint" or (
+                child.tag == "joint" and child.get("type") == "free"
+            ):
+                body.remove(child)
+    out = Path(scratch_dir) / f"{body_id}.xml"
+    tree.write(out)
+    return out
+
+
 def make_tabletop_access_ycb_builder(
     scratch_dir: Path,
     roster: Optional[Sequence[Tuple[str, str]]] = None,
@@ -162,7 +195,8 @@ def make_tabletop_access_ycb_builder(
 
     # ---- Movables: real YCB meshes, parked off-screen ----
     for body_id, ycb_source in roster:
-        b.add_resource(body_id, {"type": "ycb", "name": ycb_source})
+        mesh_xml = _materialise_ycb_mesh(ycb_source, body_id, scratch_dir)
+        b.add_resource(body_id, str(mesh_xml))
         b.add_object(body_id, name=body_id,
                      pos=[cfg.hide_far_x, 0.0, 0.10])
 
