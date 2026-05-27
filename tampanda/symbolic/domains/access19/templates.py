@@ -160,6 +160,50 @@ def dense_front(
     )
 
 
+def dense_front_n(
+    n_blockers: int, rng: np.random.Generator, *,
+    return_blockers: bool = False,
+    ooi_cell: str = _OOI_BACK_CELLS[1],
+    ooi_goal: str = _OOI_DEFAULT_GOAL,
+) -> Template:
+    """Dense-front pattern with arbitrary blocker count in ``[1, 18]``.
+
+    Fills cube columns row-by-row from the front (iy=0).  Full rows
+    take all 3 cube columns; the final (partial) row picks columns in
+    the order ``(col_1, col_3, col_5)``.  Counterpart of
+    :func:`dense_front` but parameterised by total blocker count
+    rather than full-row count — needed for v4's L4 sampling
+    ``n_blockers ∈ [10, 14]`` (between canonical_12 and canonical_15).
+    """
+    if not 1 <= n_blockers <= 18:
+        raise ValueError(
+            f"dense_front_n n_blockers must be 1..18, got {n_blockers}")
+    cells: List[str] = []
+    full_rows, partial = divmod(n_blockers, 3)
+    for iy in range(full_rows):
+        for ix in _CUBE_COLS:
+            cells.append(Cell("shelf_interior", ix, iy).id)
+    if partial:
+        for ix in _CUBE_COLS[:partial]:
+            cells.append(Cell("shelf_interior", ix, full_rows).id)
+    source = _name_blockers(cells)
+    source.append(("ooi", ooi_cell))
+    if return_blockers:
+        goal_dict = {o: c for o, c in source}
+        goal_dict["ooi"] = ooi_goal
+        goal = list(goal_dict.items())
+    else:
+        goal = [("ooi", ooi_goal)]
+    return Template(
+        name=f"dense_front_n{n_blockers}"
+                  f"{'_return' if return_blockers else ''}",
+        source_placements=source,
+        goal_placements=goal,
+        metadata={"n_blockers": n_blockers, "return": return_blockers,
+                       "ooi_cell": ooi_cell},
+    )
+
+
 def scattered_subset(
     n: int, rng: np.random.Generator, *,
     return_blockers: bool = False,
@@ -189,6 +233,74 @@ def scattered_subset(
         source_placements=source,
         goal_placements=goal,
         metadata={"n": n, "return": return_blockers, "ooi_cell": ooi_cell},
+    )
+
+
+def easy_l0(rng: np.random.Generator) -> Template:
+    """Simple L0 problem with varied OoI placement.
+
+    Diversifies the L0 distribution beyond the back-row-OoI pattern
+    in :func:`front_row_subset`.  Randomly samples:
+
+    * **OoI start**: interior (cube column ``ix ∈ {1,3,5}``, any
+      ``iy``) OR top deck (any ``ix, iy``).  50/50.
+    * **OoI goal**: random deck cell distinct from start.
+    * **Blocker** (50/50): a single non-blocking blocker at a random
+      valid cell — if interior, *not* in front of the OoI's column;
+      if on deck, not at the OoI or goal cell.
+
+    Plan length: 2 actions (pick + put) when no blocker or
+    non-blocking blocker; we deliberately reject configurations that
+    would require clearing.
+    """
+    interior_cells = [Cell("shelf_interior", ix, iy).id
+                          for ix in _CUBE_COLS for iy in range(7)]
+    deck_cells = [Cell("shelf_top", ix, iy).id
+                      for ix in range(7) for iy in range(7)]
+
+    # OoI start.
+    ooi_interior = bool(rng.integers(0, 2))
+    if ooi_interior:
+        ooi_cell = str(rng.choice(interior_cells))
+        ooi_col, ooi_row = (int(t) for t in ooi_cell.split("__")[1].split("_"))
+    else:
+        ooi_cell = str(rng.choice(deck_cells))
+        ooi_col = ooi_row = None
+
+    # Goal: random deck cell distinct from start.
+    goal_cell = ooi_cell
+    while goal_cell == ooi_cell:
+        goal_cell = str(rng.choice(deck_cells))
+
+    source_placements: List[_Placement] = []
+    has_blocker = bool(rng.integers(0, 2))
+    if has_blocker:
+        # Try to find a non-blocking blocker position.
+        for _attempt in range(30):
+            if bool(rng.integers(0, 2)):
+                bcell = str(rng.choice(interior_cells))
+                bix, biy = (int(t) for t in bcell.split("__")[1].split("_"))
+                if ooi_interior and bix == ooi_col and biy < ooi_row:
+                    continue  # would block OoI's row-step approach
+                if bcell == ooi_cell:
+                    continue
+            else:
+                bcell = str(rng.choice(deck_cells))
+                if bcell in (ooi_cell, goal_cell):
+                    continue
+            source_placements.append(("blocker_0", bcell))
+            break
+
+    source_placements.append(("ooi", ooi_cell))
+
+    return Template(
+        name="easy_l0",
+        source_placements=source_placements,
+        goal_placements=[("ooi", goal_cell)],
+        metadata={
+            "ooi_start": "interior" if ooi_interior else "deck",
+            "has_blocker": len(source_placements) > 1,
+        },
     )
 
 

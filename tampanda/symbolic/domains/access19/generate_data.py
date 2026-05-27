@@ -68,6 +68,8 @@ from tampanda.symbolic.domains.access19.templates import (
     canonical_12,
     canonical_18,
     dense_front,
+    dense_front_n,
+    easy_l0,
     front_row_subset,
     goal_layout as template_goal_layout,
     gotcha_corridor_jam,
@@ -86,6 +88,7 @@ from tampanda.planners.linear_ik import LinearIKPlanner
 
 _HERE = Path(__file__).parent
 _DOMAIN = (_HERE / "pddl" / "domain.pddl").resolve()
+_DOMAIN_DERIVED = (_HERE / "pddl" / "domain_derived.pddl").resolve()
 
 _DEFAULT_OUTPUT_DIR = Path("data/access19")
 _DEFAULT_TRAIN = 24
@@ -97,7 +100,10 @@ _DEFAULT_SEED = 42
 # Templates allowed per level.  L0/L1 = OoI-only goal; L2+ = return-all
 # goal (specified via the ``return_blockers`` kwarg in the sampler).
 _LEVEL_TEMPLATE_NAMES: Dict[int, List[str]] = {
-    0: ["front_row_subset"],     # n=0..1, return=False
+    0: ["front_row_subset", "easy_l0"],
+    # easy_l0 adds varied OoI start (interior or deck) + random deck
+    # goal + optional non-blocking blocker.  Mixed 50/50 with the
+    # original back-row OoI front_row_subset n=0..1 pattern.
     1: ["front_row_subset"],     # n=2..3, return=False
     2: ["dense_front", "scattered_subset"],   # n_rows<=2 / n<=6, return=True
     3: ["dense_front", "scattered_subset", "gotcha_corridor_jam"],
@@ -130,15 +136,54 @@ _CURRICULA: Dict[str, List[Tuple[int, int]]] = {
     # Option-B (max-12-blocker) training distribution.  L4 = canonical_12.
     "train_300_option_b": [(0, 40), (1, 60), (2, 80), (3, 80), (4, 40)],
     "val_50_option_b":    [(0, 10), (1, 10), (2, 10), (3, 10), (4, 10)],
-    # Held-out evals.
+    # v4: max-14-blocker training with mixed 50% return at L3+L4.
+    # L4 = dense_front_n(n ∈ [10, 14]).  L3 = dense_front (n_rows
+    # 3..4 → 9..12 blockers).
+    "train_600_v4":       [(0, 80), (1, 120), (2, 160), (3, 160), (4, 80)],
+    "val_100_v4":         [(0, 20), (1, 20), (2, 20), (3, 20), (4, 20)],
+    # v4.5: focused on the access-19 target distribution.  No curriculum
+    # tiers — every problem is L4 with dense_front_n(n ∈ [3, 18])
+    # and 100% return.  Val biases half to canonical_18.
+    "train_600_v4_5":     [(4, 600)],
+    "val_10_v4_5":        [(4, 10)],
+    # Held-out evals (unchanged from v3).
     "eval_30_pre_b":      [(k, 6) for k in range(5)],
     "eval_30_full_a19":   [(4, 30)],
 }
 _L4_TEMPLATE_OVERRIDE = {
     "train_300_option_b":  ["canonical_12"],
     "val_50_option_b":     ["canonical_12"],
+    "train_600_v4":        ["dense_front_n"],
+    "val_100_v4":          ["dense_front_n"],
+    "train_600_v4_5":      ["dense_front_n"],
+    "val_10_v4_5":         ["dense_front_n"],
     "eval_30_pre_b":       ["canonical_18"],
     "eval_30_full_a19":    ["canonical_18"],
+}
+
+# v4: per-curriculum, per-level return probability.  ``None`` =
+# fall back to the historical hard-coded ``level >= 2`` boolean.
+_RETURN_PROB: Dict[str, Dict[int, float]] = {
+    "train_600_v4": {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.5, 4: 0.5},
+    "val_100_v4":   {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.5, 4: 0.5},
+    # v4.5: 100% return at all positions (focused on access-19 target).
+    "train_600_v4_5": {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0},
+    "val_10_v4_5":    {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0},
+}
+
+# v4: L4 n_blockers range (used when sampler dispatches dense_front_n).
+_L4_N_BLOCKERS_RANGE: Tuple[int, int] = (10, 14)   # inclusive bounds
+# Per-curriculum override of the L4 n_blockers range.  Falls back to
+# ``_L4_N_BLOCKERS_RANGE`` when no entry.
+_L4_N_BLOCKERS_RANGE_OVERRIDE: Dict[str, Tuple[int, int]] = {
+    "train_600_v4_5": (3, 18),
+    "val_10_v4_5":    (3, 17),   # 50% will be canonical_18 via bias
+}
+# Per-curriculum probability of using n=18 (canonical_18 pattern)
+# regardless of the range above.  Used to bias the v4.5 val set
+# toward the canonical configuration.
+_L4_CANONICAL_18_BIAS: Dict[str, float] = {
+    "val_10_v4_5": 0.5,
 }
 
 
@@ -154,11 +199,48 @@ _OBJECT_NAMES = [f"blocker_{i}" for i in range(18)] + ["ooi"]
 # ---------------------------------------------------------------------------
 
 
+# Cube columns in shelf_interior where blockers and the OoI live.
+# Used by ``_same_column_front_facts`` to scope the static
+# ``(same-column-front …)`` emission to the relevant axis.
+_CUBE_COLS_IX: Tuple[int, ...] = (1, 3, 5)
+
+
+def _same_column_front_facts(workspace) -> List[str]:
+    """Emit ``(same-column-front ?cf ?cb)`` for every ordered pair
+    (cf, cb) of cells in the same cube column of ``shelf_interior``
+    with ``cf.iy < cb.iy``.
+
+    Only the 3 cube columns (``ix ∈ {1, 3, 5}``) are emitted —
+    blockers and the OoI live there exclusively in access-19's
+    canonical layouts.  21 ordered pairs per column × 3 columns = 63
+    facts per problem.
+
+    The ``shelf_top`` grid is open from above (the chain enters
+    via the open ceiling, not via a -y face), so the "front" axis
+    has no analog there — no same-column-front facts on the deck.
+    """
+    facts: List[str] = []
+    region = workspace["shelf_interior"]
+    ny = region.cells_y
+    for ix in _CUBE_COLS_IX:
+        for iy_front in range(ny):
+            if region.is_excluded(ix, iy_front):
+                continue
+            for iy_back in range(iy_front + 1, ny):
+                if region.is_excluded(ix, iy_back):
+                    continue
+                cf = f"shelf_interior__{ix}_{iy_front}"
+                cb = f"shelf_interior__{ix}_{iy_back}"
+                facts.append(f"(same-column-front {cf} {cb})")
+    return facts
+
+
 def _enumerate_static_init(workspace) -> Tuple[List[str], List[str]]:
     """Return ``(object_names, static_init_predicates)`` for the PDDL :init.
 
     Static facts = per-grid ``(adjacent north c1 c2)`` and
-    ``(adjacent east c1 c2)`` edges.  Each grid is internally
+    ``(adjacent east c1 c2)`` edges + ``(same-column-front …)`` for
+    cube columns of ``shelf_interior``.  Each grid is internally
     8-connected only through its own cells; there is no adjacency
     between ``shelf_interior`` and ``shelf_top``.  Convention:
     ``north`` = +iy (depth, away from robot), ``east`` = +ix
@@ -186,8 +268,9 @@ def _enumerate_static_init(workspace) -> Tuple[List[str], List[str]]:
                 if ix + 1 < nx and not region.is_excluded(ix + 1, iy):
                     east_nb = f"{region.name}__{ix + 1}_{iy}"
                     adjacencies.append(f"(adjacent east {here} {east_nb})")
+    statics = adjacencies + _same_column_front_facts(workspace)
     objects = list(_OBJECT_NAMES) + cells
-    return objects, adjacencies
+    return objects, statics
 
 
 def write_pddl_problem(
@@ -217,6 +300,23 @@ def write_pddl_problem(
     for obj, cid in template.goal_placements:
         goal_atoms.append(f"(occupied {cid} {obj})")
 
+    # Active object roster — only movables that appear in source or
+    # goal placements.  Declaring unused movables in ``:objects`` would
+    # add isolated nodes to the GNN's predicate graph (no incident
+    # edges, no embedding signal) and degrade learning.  Unused
+    # bodies still exist in MuJoCo but are parked off-scene by
+    # ``restore_state``; symbolically they're absent.
+    active_movables: List[str] = []
+    seen = set()
+    for obj, _ in template.source_placements:
+        if obj not in seen:
+            seen.add(obj)
+            active_movables.append(obj)
+    for obj, _ in template.goal_placements:
+        if obj not in seen:
+            seen.add(obj)
+            active_movables.append(obj)
+
     occupied_cells = set(src_layout.values())
     init: List[str] = []
     init.extend(static_adjacencies)
@@ -231,7 +331,7 @@ def write_pddl_problem(
     lines.append(f"(define (problem {problem_name})")
     lines.append("  (:domain tabletop-access)")
     lines.append("  (:objects")
-    lines.append(f"    {' '.join(_OBJECT_NAMES)} - movable")
+    lines.append(f"    {' '.join(active_movables)} - movable")
     lines.append(f"    {' '.join(cell_names)} - cell")
     lines.append("  )")
     lines.append("  (:init")
@@ -363,6 +463,11 @@ def _sample_template(
     curriculum override for L4 (used by the v2 bundle to swap
     ``canonical_18`` ↔ ``canonical_12``).  Applies a random mirror_x
     with prob=0.5 for variant multiplication.
+
+    Return-blocker behaviour: v3 and earlier hard-coded
+    ``return_blockers = level >= 2``.  v4 uses per-curriculum
+    per-level probabilities (see ``_RETURN_PROB``) so training can
+    mix return vs no-return at the same level.
     """
     if (level == 4 and curriculum_spec is not None
             and curriculum_spec in _L4_TEMPLATE_OVERRIDE):
@@ -370,7 +475,14 @@ def _sample_template(
     else:
         names = _LEVEL_TEMPLATE_NAMES[level]
     name = str(rng.choice(names))
-    return_blockers = level >= 2
+
+    # Per-curriculum return probability, falling back to the legacy
+    # boolean for curricula that don't specify it.
+    prob_table = _RETURN_PROB.get(curriculum_spec or "")
+    if prob_table is not None:
+        return_blockers = bool(rng.random() < prob_table.get(level, 0.0))
+    else:
+        return_blockers = level >= 2
 
     if name == "front_row_subset":
         n = int(rng.integers(0, 2)) if level == 0 \
@@ -379,15 +491,28 @@ def _sample_template(
     elif name == "dense_front":
         n_rows = int(rng.integers(1, 3))    # 1 or 2 rows
         tpl = dense_front(n_rows, rng, return_blockers=return_blockers)
+    elif name == "dense_front_n":
+        # Per-curriculum range + optional canonical-18 bias (v4.5 val).
+        bias = _L4_CANONICAL_18_BIAS.get(curriculum_spec or "", 0.0)
+        if bias > 0.0 and rng.random() < bias:
+            n_blockers = 18
+        else:
+            lo, hi = _L4_N_BLOCKERS_RANGE_OVERRIDE.get(
+                curriculum_spec or "", _L4_N_BLOCKERS_RANGE)
+            n_blockers = int(rng.integers(lo, hi + 1))
+        tpl = dense_front_n(n_blockers, rng,
+                                  return_blockers=return_blockers)
     elif name == "scattered_subset":
         n = int(rng.integers(3, 7))         # 3..6 scattered blockers
         tpl = scattered_subset(n, rng, return_blockers=return_blockers)
     elif name == "gotcha_corridor_jam":
-        tpl = gotcha_corridor_jam(rng, return_blockers=True)
+        tpl = gotcha_corridor_jam(rng, return_blockers=return_blockers)
     elif name == "canonical_18":
         tpl = canonical_18(return_blockers=True)
     elif name == "canonical_12":
         tpl = canonical_12(return_blockers=True)
+    elif name == "easy_l0":
+        tpl = easy_l0(rng)
     else:
         raise ValueError(f"unknown template name {name!r}")
 
@@ -713,6 +838,12 @@ def _run_curriculum(
 def _copy_domain(output_dir: Path) -> None:
     if _DOMAIN.exists():
         shutil.copy(_DOMAIN, output_dir / "domain.pddl")
+    # Bundle the rgnet/GNN variant alongside the planner domain.  The
+    # planner uses ``domain.pddl`` (no derived predicates);
+    # ``domain_derived.pddl`` carries ``(blocking …)`` derived from
+    # the static ``(same-column-front …)`` facts emitted per problem.
+    if _DOMAIN_DERIVED.exists():
+        shutil.copy(_DOMAIN_DERIVED, output_dir / "domain_derived.pddl")
 
 
 def main() -> int:
@@ -748,6 +879,18 @@ def main() -> int:
                                    "(train+val Option-B, eval_pre_b, "
                                    "eval_full).  Output dirs are flat "
                                    "(no L<level>/ subdirs).")
+    p.add_argument("--bundle-v4", action="store_true",
+                          help="generate the v4 4-dataset bundle "
+                                   "(train_600 + val_100 with dense_front_n "
+                                   "L4 n∈[10,14] + 50%% return at L3/L4; "
+                                   "eval_pre_b + eval_full unchanged). "
+                                   "Output dirs are flat.")
+    p.add_argument("--bundle-v4-5", action="store_true",
+                          help="generate the v4.5 access-19-focused "
+                                   "bundle (train_600 + val_10, all "
+                                   "dense_front_n with n∈[3,18] uniform "
+                                   "and 100%% return; val biases half to "
+                                   "canonical_18). Output dirs flat.")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -780,6 +923,41 @@ def main() -> int:
         if args.num_test > 0:
             _run_curriculum("test", _CURRICULA["test_per_level"],
                                   args, args.output_dir, args.seed + 200)
+        return 0
+
+    # V4.5 bundle mode — access-19-focused full training set.  No
+    # curriculum tiers; every problem is dense_front_n(n ∈ [3, 18])
+    # with 100% return.  Val biases half to canonical_18.
+    if args.bundle_v4_5:
+        _run_curriculum("train", _CURRICULA["train_600_v4_5"],
+                                args, args.output_dir, args.seed,
+                                flat=True,
+                                curriculum_spec="train_600_v4_5")
+        _run_curriculum("val", _CURRICULA["val_10_v4_5"],
+                                args, args.output_dir, args.seed + 100,
+                                flat=True,
+                                curriculum_spec="val_10_v4_5")
+        return 0
+
+    # V4 bundle mode — train_600 + val_100 with dense_front_n L4 +
+    # 50% return at L3/L4; eval splits unchanged.
+    if args.bundle_v4:
+        _run_curriculum("train", _CURRICULA["train_600_v4"],
+                                args, args.output_dir, args.seed,
+                                flat=True,
+                                curriculum_spec="train_600_v4")
+        _run_curriculum("val", _CURRICULA["val_100_v4"],
+                                args, args.output_dir, args.seed + 100,
+                                flat=True,
+                                curriculum_spec="val_100_v4")
+        _run_curriculum("eval_pre_b", _CURRICULA["eval_30_pre_b"],
+                                args, args.output_dir, args.seed + 200,
+                                flat=True,
+                                curriculum_spec="eval_30_pre_b")
+        _run_curriculum("eval_full", _CURRICULA["eval_30_full_a19"],
+                                args, args.output_dir, args.seed + 300,
+                                flat=True,
+                                curriculum_spec="eval_30_full_a19")
         return 0
 
     # V2 bundle mode — 4 datasets in one shot, flat output dirs.

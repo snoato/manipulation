@@ -35,6 +35,13 @@
     (empty ?cel - cell)
     (holding ?obj - movable)
     (gripper-empty)
+    ;; Static structural relation: ``?cel-front`` is in the same
+    ;; cube column as ``?cel-back`` and strictly closer to the open
+    ;; -y face (``iy_front < iy_back``).  Emitted per problem in
+    ;; ``:init``.  Planner doesn't use it (declared as a no-op);
+    ;; powers the ``(blocking …)`` derived predicate in
+    ;; ``domain_derived.pddl`` for GNN structural reasoning.
+    (same-column-front ?cel-front - cell ?cel-back - cell)
   )
 
   (:action pick
