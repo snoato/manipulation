@@ -626,6 +626,78 @@ _CUBE_BACK_CELLS: Tuple[str, ...] = tuple(
 )
 
 
+_V45_WORKER_STATE: Dict[str, Any] = {}
+
+
+def _v45_worker_init(base_seed: int) -> None:
+    """Per-worker env build for the v4.5 curated pool.  Called once
+    per worker process at pool startup."""
+    import os
+    import tempfile
+    scratch = tempfile.TemporaryDirectory(prefix="v4_5_worker_")
+    env, ws, cfg, executor, pick_fn, put_fn, shelf_home = _setup_env(
+        Path(scratch.name))
+    _V45_WORKER_STATE.update({
+        "scratch": scratch,
+        "env": env, "ws": ws, "cfg": cfg, "executor": executor,
+        "pick_fn": pick_fn, "put_fn": put_fn, "shelf_home": shelf_home,
+        # Per-worker rng seeded by base + pid for reproducibility +
+        # divergence across workers.
+        "rng": np.random.default_rng(base_seed + os.getpid()),
+    })
+
+
+def _v45_worker_easy(_task_idx: int) -> Optional[Tuple[Template, List[Tuple]]]:
+    """Sample + plan one easy (n=3-9) problem.  ``_task_idx`` is
+    ignored — sampling is RNG-driven."""
+    s = _V45_WORKER_STATE
+    if not s:
+        return None
+    rng = s["rng"]
+    n = int(rng.integers(3, 10))
+    tpl = dense_front_n(n, rng, return_blockers=True)
+    if bool(rng.integers(0, 2)):
+        try:
+            tpl = mirror_x(tpl)
+        except Exception:
+            pass
+    plan = _plan_one(tpl, s["env"], s["ws"], s["cfg"], s["executor"],
+                        s["pick_fn"], s["put_fn"], s["shelf_home"],
+                        planner_kind="astar", time_budget_s=60.0)
+    if plan is None:
+        return None
+    return (tpl, plan)
+
+
+def _v45_worker_hard(
+    spec: Tuple[str, int, Optional[str]],
+) -> Optional[Tuple[Template, List[Tuple]]]:
+    """Plan one hard class spec.  ``spec`` is ``(kind, n, ooi_cell)``
+    where ``kind ∈ {"dense_front_n", "scattered_subset",
+    "canonical_18"}``.  ``ooi_cell`` is used by dense_front_n only.
+    """
+    s = _V45_WORKER_STATE
+    if not s:
+        return None
+    rng = s["rng"]
+    kind, n, ooi_cell = spec
+    if kind == "dense_front_n":
+        tpl = dense_front_n(n, rng, return_blockers=True,
+                                   ooi_cell=ooi_cell)
+    elif kind == "scattered_subset":
+        tpl = scattered_subset(n, rng, return_blockers=True)
+    elif kind == "canonical_18":
+        tpl = canonical_18(return_blockers=True)
+    else:
+        return None
+    plan = _plan_one(tpl, s["env"], s["ws"], s["cfg"], s["executor"],
+                        s["pick_fn"], s["put_fn"], s["shelf_home"],
+                        planner_kind="phased", time_budget_s=300.0)
+    if plan is None:
+        return None
+    return (tpl, plan)
+
+
 def _random_blocker_perm(
     template: Template, rng: np.random.Generator,
 ) -> Dict[str, str]:
@@ -766,70 +838,74 @@ def _generate_v4_5_curated(
     _copy_domain(output_dir)
 
     rng = np.random.default_rng(seed)
-    scratch = tempfile.TemporaryDirectory(prefix="v4_5_curated_")
-    env, ws, cfg, executor, pick_fn, put_fn, shelf_home = _setup_env(
-        Path(scratch.name))
+    num_workers = max(1, getattr(args, "num_workers", None) or 1)
+    print(f"[v4.5 curated] pool size: {num_workers}")
 
-    # --- Section 1: easy (n=3-9) via astar ----------------------------
+    # --- Section 1: easy (n=3-9) via astar, parallel ------------------
     print(f"[v4.5 curated] Section 1: easy (n=3-9), astar")
     target_easy = 250
     easy_instances: List[Tuple[Template, List[Tuple]]] = []
-    attempts = 0
-    while len(easy_instances) < target_easy and attempts < target_easy * 3:
-        attempts += 1
-        n = int(rng.integers(3, 10))
-        tpl = dense_front_n(n, rng, return_blockers=True)
-        if bool(rng.integers(0, 2)):
-            try:
-                tpl = mirror_x(tpl)
-            except Exception:
-                pass
-        plan = _plan_one(tpl, env, ws, cfg, executor, pick_fn, put_fn,
-                            shelf_home, planner_kind="astar",
-                            time_budget_s=60.0)
-        if plan is None:
-            continue
-        easy_instances.append((tpl, plan))
-        if len(easy_instances) % 25 == 0:
-            print(f"  easy: {len(easy_instances)}/{target_easy}")
-    print(f"  → {len(easy_instances)} easy instances")
 
-    # --- Section 2: hard base classes (n=10-18) via phased -----------
-    print(f"[v4.5 curated] Section 2: hard base classes (n=10-18)")
-    hard_classes: List[Tuple[Template, List[Tuple]]] = []
-    PHASED_BUDGET = 300.0   # 5 min per class
+    with mp.Pool(
+        num_workers,
+        initializer=_v45_worker_init,
+        initargs=(seed,),
+    ) as pool:
+        # Oversample tasks so we likely hit target_easy even if some
+        # samples fail (e.g. mirror collisions, planner timeouts).
+        n_tasks = target_easy * 2
+        for i, result in enumerate(
+            pool.imap_unordered(_v45_worker_easy, range(n_tasks))
+        ):
+            if result is not None:
+                easy_instances.append(result)
+                if len(easy_instances) >= target_easy:
+                    break
+            if (i + 1) % 50 == 0:
+                print(f"  easy: {len(easy_instances)}/{target_easy} "
+                      f"({i + 1} tasks dispatched)")
+        # Pool stays open for Section 2.
 
-    def _add_class(tpl: Template, label: str) -> None:
-        plan = _plan_one(tpl, env, ws, cfg, executor, pick_fn, put_fn,
-                            shelf_home, planner_kind="phased",
-                            time_budget_s=PHASED_BUDGET)
-        if plan is None:
-            print(f"  [SKIP] {label}: plan failed")
-            return
-        hard_classes.append((tpl, plan))
-        print(f"  {label}: plan_len={len(plan)}")
+        easy_instances = easy_instances[:target_easy]
+        print(f"  → {len(easy_instances)} easy instances")
 
-    # n=10..15: 3 dense_front_n (one per OoI back cell) + 2 scattered_subset
-    for n in range(10, 16):
-        for ooi_cell in _CUBE_BACK_CELLS:
-            tpl = dense_front_n(n, rng, return_blockers=True,
-                                       ooi_cell=ooi_cell)
-            _add_class(tpl, f"n={n} dense_front_n @ ooi={ooi_cell}")
-        for k in range(2):
-            tpl = scattered_subset(n, rng, return_blockers=True)
-            _add_class(tpl, f"n={n} scattered_subset #{k+1}")
+        # --- Section 2: hard base classes (n=10-18), phased, parallel
+        print(f"[v4.5 curated] Section 2: hard base classes (n=10-18)")
+        hard_specs: List[Tuple[str, int, Optional[str]]] = []
+        # n=10..15: 3 dense_front_n + 2 scattered_subset per n
+        for n in range(10, 16):
+            for ooi_cell in _CUBE_BACK_CELLS:
+                hard_specs.append(("dense_front_n", n, ooi_cell))
+            for _ in range(2):
+                hard_specs.append(("scattered_subset", n, None))
+        # n=16,17: 2 dense_front_n per n
+        for n in (16, 17):
+            for ooi_cell in _CUBE_BACK_CELLS[:2]:
+                hard_specs.append(("dense_front_n", n, ooi_cell))
+        # n=18: canonical_18
+        hard_specs.append(("canonical_18", 18, None))
 
-    # n=16,17: 2 dense_front_n per n (different OoI cells)
-    for n in (16, 17):
-        for ooi_cell in _CUBE_BACK_CELLS[:2]:
-            tpl = dense_front_n(n, rng, return_blockers=True,
-                                       ooi_cell=ooi_cell)
-            _add_class(tpl, f"n={n} dense_front_n @ ooi={ooi_cell}")
+        print(f"  dispatching {len(hard_specs)} hard classes to "
+              f"{num_workers} workers")
 
-    # n=18: canonical_18 (only one possible layout)
-    _add_class(canonical_18(return_blockers=True), "n=18 canonical_18")
+        hard_classes: List[Tuple[Template, List[Tuple]]] = []
+        for spec, result in zip(
+            hard_specs, pool.imap(_v45_worker_hard, hard_specs)
+        ):
+            if result is None:
+                print(f"  [SKIP] {spec}: plan failed")
+                continue
+            tpl, plan = result
+            hard_classes.append((tpl, plan))
+            print(f"  {spec}: plan_len={len(plan)}")
 
     print(f"  → {len(hard_classes)} hard base classes planned")
+
+    # Pool closed.  Build a single env in main process for the
+    # mirror-validation phase below.
+    scratch = tempfile.TemporaryDirectory(prefix="v4_5_main_")
+    env, ws, cfg, executor, pick_fn, put_fn, shelf_home = _setup_env(
+        Path(scratch.name))
 
     # --- Section 3: augment hard classes ---------------------------------
     print(f"[v4.5 curated] Section 3: augment (5 perms × ~2 mirrors)")
