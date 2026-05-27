@@ -414,6 +414,55 @@ def mirror_x(template: Template) -> Template:
     )
 
 
+def permute_blockers(
+    template: "Template",
+    plan: List[Tuple],
+    perm: Dict[str, str],
+) -> Tuple["Template", List[Tuple]]:
+    """Apply a blocker-label permutation to a template + plan.
+
+    ``perm`` maps ``"blocker_X" → "blocker_Y"``.  Objects not present
+    in ``perm`` (e.g., ``"ooi"``) pass through unchanged.
+
+    Why useful: the planner's plan is permutation-invariant on blocker
+    identities — relabelling blocker_3 ↔ blocker_7 in the init,
+    goal, AND every plan action gives a structurally-identical valid
+    problem.  v4.5's curated generation runs the planner once per
+    base layout and produces many training instances via this cheap
+    relabel.  GNN sees varied label patterns over the same underlying
+    structure.
+    """
+    def remap(obj):
+        return perm.get(obj, obj)
+    new_source = [(remap(o), c) for o, c in template.source_placements]
+    new_goal = [(remap(o), c) for o, c in template.goal_placements]
+    new_plan: List[Tuple] = []
+    for action in plan:
+        verb, obj, *rest = action
+        new_plan.append((verb, remap(obj), *rest))
+    new_tpl = Template(
+        name=f"{template.name}_perm",
+        source_placements=new_source,
+        goal_placements=new_goal,
+        metadata={**template.metadata, "permuted": True},
+    )
+    return new_tpl, new_plan
+
+
+def mirror_plan_x(plan: List[Tuple]) -> List[Tuple]:
+    """Apply ``_mirror_cell_x`` to each plan action's cell.
+
+    Companion to :func:`mirror_x`: the template's source/goal cells
+    flip; the plan must flip with them so each action targets the
+    mirrored cell.
+    """
+    out: List[Tuple] = []
+    for action in plan:
+        verb, obj, cell, *rest = action
+        out.append((verb, obj, _mirror_cell_x(cell), *rest))
+    return out
+
+
 def mirror_iy(template: Template) -> Template:
     """Generate the iy-mirrored variant (only legal when no source
     cell is at iy=6 — i.e., no OoI at back — since mirror would

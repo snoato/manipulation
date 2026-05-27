@@ -73,7 +73,9 @@ from tampanda.symbolic.domains.access19.templates import (
     front_row_subset,
     goal_layout as template_goal_layout,
     gotcha_corridor_jam,
+    mirror_plan_x,
     mirror_x,
+    permute_blockers,
     scattered_subset,
     source_layout as template_source_layout,
 )
@@ -613,6 +615,283 @@ def _generate_one(
 
 
 # ---------------------------------------------------------------------------
+# v4.5 curated generation — plan each unique class once, augment via
+# blocker-label permutation + mirror_x.  ~10× fewer phased planner
+# calls than random sampling for n_blockers ∈ [10, 18].
+# ---------------------------------------------------------------------------
+
+
+_CUBE_BACK_CELLS: Tuple[str, ...] = tuple(
+    Cell("shelf_interior", ix, 6).id for ix in (1, 3, 5)
+)
+
+
+def _random_blocker_perm(
+    template: Template, rng: np.random.Generator,
+) -> Dict[str, str]:
+    """Sample a random non-identity permutation of the template's
+    blocker labels.  ``ooi`` is never remapped.  Returns ``{}`` when
+    there are fewer than 2 blockers (no meaningful permutation).
+    """
+    blockers = [obj for obj, _ in template.source_placements
+                       if obj.startswith("blocker_")]
+    if len(blockers) < 2:
+        return {}
+    for _attempt in range(8):
+        shuffled = list(blockers)
+        rng.shuffle(shuffled)
+        if shuffled != blockers:
+            return dict(zip(blockers, shuffled))
+    return {}
+
+
+def _plan_one(
+    tpl: Template, env, ws, cfg, executor, pick_fn, put_fn, shelf_home,
+    *, planner_kind: str, time_budget_s: float,
+) -> Optional[List[Tuple]]:
+    """Plan + FAST-replay-validate a template.  Returns the plan, or
+    ``None`` if either step fails.  Mirrors the validation in
+    ``_generate_one``."""
+    plan, info = build_plan(
+        tpl, env, ws, cfg, executor, pick_fn, put_fn, shelf_home,
+        planner_kind=planner_kind, time_budget_s=time_budget_s,
+    )
+    if not info["success"]:
+        return None
+    init_state = _state_from_layout(template_source_layout(tpl))
+    seq_res = check_action_sequence(
+        env, ws, cfg, init_state, plan, _OBJECT_NAMES,
+        pick_fn, put_fn, executor=executor, fast=True,
+        home_qpos=shelf_home, short_circuit=True,
+    )
+    if not seq_res["success"]:
+        return None
+    return plan
+
+
+def _augment_class(
+    tpl: Template, plan: List[Tuple],
+    rng: np.random.Generator,
+    env, ws, cfg, executor, pick_fn, put_fn, shelf_home,
+    *, n_perms: int = 5, mirror: bool = True,
+) -> List[Tuple[Template, List[Tuple]]]:
+    """Produce up to ``n_perms × (2 if mirror else 1)`` (template, plan)
+    instances from a single base class.
+
+    Permutations are blocker-label remaps: trivially valid by the
+    chain's permutation invariance on object identities → no replay.
+    Mirrors flip cell ix → 6 - ix; replay-validated (the chain's IK
+    can land in different null-space basins for mirrored configs and
+    we want to reject if any substep collides).
+    """
+    instances: List[Tuple[Template, List[Tuple]]] = [(tpl, list(plan))]
+    used_perms: set = set()
+    for _ in range(n_perms - 1):
+        perm = _random_blocker_perm(tpl, rng)
+        if not perm:
+            continue
+        key = tuple(sorted(perm.items()))
+        if key in used_perms:
+            continue
+        used_perms.add(key)
+        rt, rp = permute_blockers(tpl, plan, perm)
+        instances.append((rt, rp))
+
+    if not mirror:
+        return instances
+
+    mirrored: List[Tuple[Template, List[Tuple]]] = []
+    for inst_tpl, inst_plan in instances:
+        try:
+            mt = mirror_x(inst_tpl)
+            mp = mirror_plan_x(inst_plan)
+        except Exception:
+            continue
+        # FAST-replay-validate the mirrored variant.
+        init_state = _state_from_layout(template_source_layout(mt))
+        try:
+            seq_res = check_action_sequence(
+                env, ws, cfg, init_state, mp, _OBJECT_NAMES,
+                pick_fn, put_fn, executor=executor, fast=True,
+                home_qpos=shelf_home, short_circuit=True,
+            )
+        except Exception:
+            continue
+        if seq_res.get("success"):
+            mirrored.append((mt, mp))
+    return instances + mirrored
+
+
+def _write_problem_and_plan(
+    tpl: Template, plan: List[Tuple], ws, output_dir: Path,
+    config_num: int, split: str,
+) -> None:
+    ppath = output_dir / f"config_{config_num}.pddl"
+    plpath = output_dir / f"config_{config_num}.pddl.plan"
+    write_pddl_problem(
+        tpl, ws, ppath,
+        problem_name=f"access19-{split}-{config_num}",
+    )
+    write_plan_file(plan, plpath, metadata={
+        "template": tpl.name,
+        "n_blockers": tpl.metadata.get("n_blockers", "?"),
+        "return": tpl.metadata.get("return", False),
+        "permuted": tpl.metadata.get("permuted", False),
+        "mirrored": tpl.metadata.get("mirrored", ""),
+        "split": split,
+        "config_num": config_num,
+    })
+
+
+def _generate_v4_5_curated(
+    args, output_dir: Path, seed: int,
+) -> int:
+    """Curated v4.5 generation.
+
+    Easy path (n ∈ [3, 9]): random sampling × astar → target ~250
+    problems.  Each is a unique random instance (no augmentation
+    needed — astar is fast).
+
+    Hard path (n ∈ [10, 18]): curated base classes planned once each
+    with phased, then augmented via 5 relabellings + mirror_x to give
+    up to 10 instances per class.
+
+    Returns total problems written to ``train/``.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    train_dir = output_dir / "train"
+    val_dir = output_dir / "val"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    val_dir.mkdir(parents=True, exist_ok=True)
+    _copy_domain(output_dir)
+
+    rng = np.random.default_rng(seed)
+    scratch = tempfile.TemporaryDirectory(prefix="v4_5_curated_")
+    env, ws, cfg, executor, pick_fn, put_fn, shelf_home = _setup_env(
+        Path(scratch.name))
+
+    # --- Section 1: easy (n=3-9) via astar ----------------------------
+    print(f"[v4.5 curated] Section 1: easy (n=3-9), astar")
+    target_easy = 250
+    easy_instances: List[Tuple[Template, List[Tuple]]] = []
+    attempts = 0
+    while len(easy_instances) < target_easy and attempts < target_easy * 3:
+        attempts += 1
+        n = int(rng.integers(3, 10))
+        tpl = dense_front_n(n, rng, return_blockers=True)
+        if bool(rng.integers(0, 2)):
+            try:
+                tpl = mirror_x(tpl)
+            except Exception:
+                pass
+        plan = _plan_one(tpl, env, ws, cfg, executor, pick_fn, put_fn,
+                            shelf_home, planner_kind="astar",
+                            time_budget_s=60.0)
+        if plan is None:
+            continue
+        easy_instances.append((tpl, plan))
+        if len(easy_instances) % 25 == 0:
+            print(f"  easy: {len(easy_instances)}/{target_easy}")
+    print(f"  → {len(easy_instances)} easy instances")
+
+    # --- Section 2: hard base classes (n=10-18) via phased -----------
+    print(f"[v4.5 curated] Section 2: hard base classes (n=10-18)")
+    hard_classes: List[Tuple[Template, List[Tuple]]] = []
+    PHASED_BUDGET = 300.0   # 5 min per class
+
+    def _add_class(tpl: Template, label: str) -> None:
+        plan = _plan_one(tpl, env, ws, cfg, executor, pick_fn, put_fn,
+                            shelf_home, planner_kind="phased",
+                            time_budget_s=PHASED_BUDGET)
+        if plan is None:
+            print(f"  [SKIP] {label}: plan failed")
+            return
+        hard_classes.append((tpl, plan))
+        print(f"  {label}: plan_len={len(plan)}")
+
+    # n=10..15: 3 dense_front_n (one per OoI back cell) + 2 scattered_subset
+    for n in range(10, 16):
+        for ooi_cell in _CUBE_BACK_CELLS:
+            tpl = dense_front_n(n, rng, return_blockers=True,
+                                       ooi_cell=ooi_cell)
+            _add_class(tpl, f"n={n} dense_front_n @ ooi={ooi_cell}")
+        for k in range(2):
+            tpl = scattered_subset(n, rng, return_blockers=True)
+            _add_class(tpl, f"n={n} scattered_subset #{k+1}")
+
+    # n=16,17: 2 dense_front_n per n (different OoI cells)
+    for n in (16, 17):
+        for ooi_cell in _CUBE_BACK_CELLS[:2]:
+            tpl = dense_front_n(n, rng, return_blockers=True,
+                                       ooi_cell=ooi_cell)
+            _add_class(tpl, f"n={n} dense_front_n @ ooi={ooi_cell}")
+
+    # n=18: canonical_18 (only one possible layout)
+    _add_class(canonical_18(return_blockers=True), "n=18 canonical_18")
+
+    print(f"  → {len(hard_classes)} hard base classes planned")
+
+    # --- Section 3: augment hard classes ---------------------------------
+    print(f"[v4.5 curated] Section 3: augment (5 perms × ~2 mirrors)")
+    augmented_hard: List[Tuple[Template, List[Tuple]]] = []
+    for tpl, plan in hard_classes:
+        augments = _augment_class(
+            tpl, plan, rng,
+            env, ws, cfg, executor, pick_fn, put_fn, shelf_home,
+            n_perms=5, mirror=True,
+        )
+        augmented_hard.extend(augments)
+    print(f"  → {len(augmented_hard)} augmented hard instances")
+
+    # --- Section 4: write train ---------------------------------------
+    all_train = easy_instances + augmented_hard
+    rng.shuffle(all_train)
+    for i, (tpl, plan) in enumerate(all_train, start=1):
+        _write_problem_and_plan(tpl, plan, ws, train_dir, i, "train")
+    print(f"[v4.5 curated] wrote {len(all_train)} train problems")
+
+    # --- Section 5: val (10 problems) ---------------------------------
+    val_target = 10
+    val_instances: List[Tuple[Template, List[Tuple]]] = []
+    # 5 canonical_18 augmentations (identity + 4 relabellings)
+    c18_plan = None
+    for tpl, plan in hard_classes:
+        if tpl.metadata.get("n_blockers") == 18 or "canonical_18" in tpl.name:
+            c18_plan = plan
+            c18_tpl = tpl
+            break
+    if c18_plan is not None:
+        val_instances.append((c18_tpl, c18_plan))
+        used = set()
+        while len(val_instances) < 5:
+            perm = _random_blocker_perm(c18_tpl, rng)
+            if not perm:
+                break
+            key = tuple(sorted(perm.items()))
+            if key in used:
+                continue
+            used.add(key)
+            rt, rp = permute_blockers(c18_tpl, c18_plan, perm)
+            val_instances.append((rt, rp))
+    # Top up with relabellings of other hard classes (varied n).
+    while len(val_instances) < val_target and hard_classes:
+        tpl, plan = hard_classes[
+            int(rng.integers(0, len(hard_classes)))]
+        perm = _random_blocker_perm(tpl, rng)
+        if perm:
+            rt, rp = permute_blockers(tpl, plan, perm)
+            val_instances.append((rt, rp))
+        else:
+            val_instances.append((tpl, plan))
+    val_instances = val_instances[:val_target]
+    for i, (tpl, plan) in enumerate(val_instances, start=1):
+        _write_problem_and_plan(tpl, plan, ws, val_dir, i, "val")
+    print(f"[v4.5 curated] wrote {len(val_instances)} val problems")
+
+    return len(all_train) + len(val_instances)
+
+
+# ---------------------------------------------------------------------------
 # Split runner (single-process)
 # ---------------------------------------------------------------------------
 
@@ -934,18 +1213,13 @@ def main() -> int:
                                   args, args.output_dir, args.seed + 200)
         return 0
 
-    # V4.5 bundle mode — access-19-focused full training set.  No
-    # curriculum tiers; every problem is dense_front_n(n ∈ [3, 18])
-    # with 100% return.  Val biases half to canonical_18.
+    # V4.5 bundle mode — access-19-focused full training set.
+    # CURATED variant: plan each unique class once, augment via
+    # blocker-label permutation + mirror_x.  ~10× fewer phased
+    # planner calls than the random-sampling approach the
+    # train_600_v4_5 curriculum spec dispatches.
     if args.bundle_v4_5:
-        _run_curriculum("train", _CURRICULA["train_600_v4_5"],
-                                args, args.output_dir, args.seed,
-                                flat=True,
-                                curriculum_spec="train_600_v4_5")
-        _run_curriculum("val", _CURRICULA["val_10_v4_5"],
-                                args, args.output_dir, args.seed + 100,
-                                flat=True,
-                                curriculum_spec="val_10_v4_5")
+        _generate_v4_5_curated(args, args.output_dir, args.seed)
         return 0
 
     # V4 bundle mode — train_600 + val_100 with dense_front_n L4 +
