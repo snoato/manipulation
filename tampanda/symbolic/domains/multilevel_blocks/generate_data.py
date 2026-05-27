@@ -190,13 +190,16 @@ _LEVELS: Dict[int, List[str]] = {
     5: ["multi_tower", "staircase", "compound", "double_bridges"],
 }
 
-# Levels whose templates exercise put_upright.  put_upright works
-# correctly only with the real :class:`MultilevelBlocksExecutor`; the
-# :class:`FastFeasibilityExecutor` has unresolved IK basin issues in
-# the lift-back / column-align stages when the held block is teleported
-# rather than physically simulated.  For these levels the generator
-# uses the FULL executor (slower but ground-truth) for validation.
-_FULL_EXECUTOR_LEVELS = {4}
+# Historically L4 used the FULL executor because the FastFeasibilityExecutor
+# had IK basin issues in put_upright's column-align / descent.  After the
+# Phase 3.7 LUT-seeded executor (de4cf03) + casing fixes (330c88c, d07d72a)
+# + Phase 3.8 cached probe goal_q reuse on descent, the fast executor
+# handles put_upright reliably (verified 40/40 L4 val plans pass under
+# fast).  L4 now uses fast mode like all other levels — also avoids the
+# per_action_restore + full-executor interaction that left the held
+# block at a slightly different pose between actions, blocking
+# downstream put-* steps in datagen.
+_FULL_EXECUTOR_LEVELS: set = set()
 
 # Curriculum-spec presets.  Each preset is a list of (level, count) tuples.
 # train_600 distribution: 60, 120, 120, 120, 90, 90 = 600.
