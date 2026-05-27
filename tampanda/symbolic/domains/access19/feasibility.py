@@ -232,6 +232,117 @@ def _prefilter_reject(
 
 
 # ---------------------------------------------------------------------------
+# Combined pick-place pre-filter + dispatch (domain_combined.pddl)
+# ---------------------------------------------------------------------------
+
+
+def _prefilter_reject_pick_place(
+    action: Tuple, state: Dict[Tuple, bool],
+) -> bool:
+    """Fast-mode symbolic pre-filter for the combined
+    ``(pick-place ?obj ?cf ?ct)`` action.
+
+    Rejects if the source cell isn't occupied by the target obj OR
+    the target cell is already occupied OR either cell is column-
+    front-blocked.  Same one-way implication soundness as the base
+    ``_prefilter_reject``: a rejection means the chain would fail; a
+    non-rejection means run the chain to determine outcome.
+    """
+    if not action or action[0] != "pick-place" or len(action) < 4:
+        return False
+    _, obj, cf, ct = action[0], action[1], action[2], action[3]
+    occupied = _occupied_cells(state)
+    if _column_front_blocked(occupied, cf):
+        return True
+    if _column_front_blocked(occupied, ct):
+        return True
+    if _occupant_at(state, cf) != obj:
+        return True
+    if _occupant_at(state, ct) is not None:
+        return True
+    return False
+
+
+def _dispatch_pick_place(
+    env,
+    workspace: Workspace,
+    pick_fn: Callable,
+    put_fn: Callable,
+    action: Tuple,
+) -> bool:
+    """Run the combined ``pick-place`` chain for ``action``.
+
+    Source position comes from the env's current pose of ``obj``
+    (set by ``restore_state`` from the symbolic ``(occupied cf obj)``
+    fact).  Target position is the canonical cell centre of ``ct``.
+    """
+    if action[0] != "pick-place" or len(action) < 4:
+        raise ValueError(
+            f"_dispatch_pick_place expects (pick-place obj cf ct), got "
+            f"{action!r}"
+        )
+    _, obj_name, cf, ct = action[0], action[1], action[2], action[3]
+    source_pos, _ = env.get_object_pose(obj_name)
+    target = workspace.cell(ct)
+    target_pos = np.asarray(workspace.pose_for(target))
+    if not pick_fn(obj_name, cf, np.asarray(source_pos)):
+        return False
+    return bool(put_fn(obj_name, ct, target_pos))
+
+
+def check_pick_place_action(
+    env,
+    workspace: Workspace,
+    config: Access19Config,
+    state: Dict[Tuple, bool],
+    action: Tuple,
+    object_names: List[str],
+    pick_fn: Callable,
+    put_fn: Callable,
+    *,
+    executor,
+    fast: bool = True,
+    home_qpos: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Feasibility checker for the combined ``pick-place`` action set
+    (``domain_combined.pddl``).
+
+    Same shape as :func:`check_action` — pre-filter + state restore +
+    dispatch + timing.  Only FAST mode is fully supported (the chain
+    sequence relies on the pick chain's post-grasp short-circuit to
+    teleport the arm back to ``home_qpos`` before the put chain
+    starts).  FULL mode falls through to the same code path; callers
+    needing ground-truth physics should sequence ``check_action``
+    calls instead.
+    """
+    t_start = time.perf_counter()
+    if fast and _prefilter_reject_pick_place(action, state):
+        return {
+            "success": False,
+            "elapsed_s": time.perf_counter() - t_start,
+            "error": None,
+            "fast": fast,
+            "prefiltered": True,
+        }
+    restore_state(env, workspace, config, state, object_names,
+                       home_qpos=home_qpos)
+    try:
+        with (_fast_env(env, executor) if fast else contextlib.nullcontext()):
+            ok = _dispatch_pick_place(env, workspace, pick_fn, put_fn,
+                                                 action)
+        err = None
+    except Exception as exc:
+        ok = False
+        err = f"{type(exc).__name__}: {exc}"
+    return {
+        "success": bool(ok),
+        "elapsed_s": time.perf_counter() - t_start,
+        "error": err,
+        "fast": fast,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Action dispatch
 # ---------------------------------------------------------------------------
 

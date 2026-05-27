@@ -85,6 +85,38 @@ _PLACE_CLEARANCE = 0.003
 
 
 PutFn = Callable[[str, str, np.ndarray], bool]
+PickPlaceFn = Callable[[str, str, str, np.ndarray, np.ndarray], bool]
+
+
+def make_access19_pick_place_fn(
+    pick_fn,
+    put_fn,
+) -> PickPlaceFn:
+    """Compose pick + put chains into a single ``pick-place`` action.
+
+    Returned closure signature::
+
+        pick_place(obj_name, from_cell, to_cell, source_pos, target_pos)
+        -> bool
+
+    In FAST mode the pick sub-chain's ``_finish_in_fast`` teleports the
+    arm back to ``home_qpos`` after grasp (with the cube still
+    attached); the subsequent put sub-chain starts from that canonical
+    pose without any explicit reset.
+
+    FULL mode is NOT supported here — the post-grasp reset is FAST-
+    only.  Callers that need ground-truth FULL execution should
+    invoke ``pick_fn`` and ``put_fn`` directly with their own state
+    sync between them.
+    """
+    def pick_place(obj_name: str, from_cell: str, to_cell: str,
+                       source_pos: np.ndarray, target_pos: np.ndarray) -> bool:
+        if not pick_fn(obj_name, from_cell, source_pos):
+            return False
+        if not put_fn(obj_name, to_cell, target_pos):
+            return False
+        return True
+    return pick_place
 
 
 def make_access19_put_fn(env, executor, workspace: Workspace,
