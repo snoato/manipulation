@@ -32,6 +32,15 @@ from tampanda.symbolic.domains.access19.env_builder import Access19Config
 
 _PARKED_XYZ: Tuple[float, float, float] = (100.0, 0.0, 0.05)
 
+# Physical-roster — every MuJoCo body the access-19 scene declares,
+# regardless of whether a particular problem uses it.  Used by
+# ``restore_state`` to park every body before re-placing the
+# problem-active subset, so unused bodies can't sit in the workspace
+# from a previous action.
+_PHYSICAL_OBJECT_NAMES: Tuple[str, ...] = tuple(
+    [f"blocker_{i}" for i in range(18)] + ["ooi"]
+)
+
 
 def ground_to_object_cells(
     state: Dict[Tuple, bool],
@@ -116,9 +125,12 @@ def restore_state(
         env.controller.open_gripper()
         env.data.ctrl[7] = 0.04
 
-    # 2. Park everyone first.
+    # 2. Park every PHYSICAL body first (not just the symbolic roster
+    # ``object_names`` — problems may declare a variable subset, but the
+    # MuJoCo bodies all exist regardless and any unparked one would sit
+    # in the workspace from a previous action).
     parked_arr = np.asarray(parked_xyz, dtype=float)
-    for name in object_names:
+    for name in _PHYSICAL_OBJECT_NAMES:
         env.set_object_pose(name, parked_arr)
 
     # 3. Place objects per the (occupied cell obj) predicates.
