@@ -546,6 +546,15 @@ def _generate_one(
     template = _sample_template(rng, level=level,
                                         curriculum_spec=curriculum_spec)
     planner_kind = _LEVEL_PLANNER[level]
+    # When the template is dense_front_n with a small blocker count
+    # (n_blockers ≤ 9), astar is much faster than phased and still
+    # finds optimal plans.  Matters mainly for v4.5, whose flat
+    # n ∈ [3, 18] distribution puts every problem at "L4" → would
+    # otherwise dispatch phased even for trivial n=3 cases.
+    n_blockers = template.metadata.get("n_blockers")
+    if (planner_kind == "phased"
+            and isinstance(n_blockers, int) and n_blockers <= 9):
+        planner_kind = "astar"
 
     plan, info = build_plan(
         template, env, workspace, cfg,
