@@ -45,6 +45,10 @@ echo "========================================================================"
 
 export PATH="$(dirname ${PYTHON_BIN}):${PATH}"
 # Physics-only (no rendering) — no GL backend required.
+# Pre-populated shared-FS YCB cache (compute nodes have no ~/.cache / internet);
+# populate once on a workstation: TAMPANDA_ASSETS_CACHE=<path> python -c \
+#   "from ...tabletop_access_ycb.setup import build_setup; build_setup(__import__('tempfile').mkdtemp())"
+export TAMPANDA_ASSETS_CACHE=/work/rleap1/daniel.swoboda/tampanda_assets_cache
 cd "${PROJECT_ROOT}"
 
 # One --start-index (= TASK * PER_TRAIN) offsets every split's NNNN.  Since
