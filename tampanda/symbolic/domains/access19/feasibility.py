@@ -182,6 +182,54 @@ def _column_front_blocked(occupied: set, cell_id: str) -> bool:
     return False
 
 
+def _lateral_front_blocked(occupied: set, cell_id: str) -> bool:
+    """True iff reaching interior cell ``(ix, iy)`` is blocked by a cube
+    in an *adjacent cube column* that sits *in front of* the target.
+
+    Empirically measured (palm-+y FRONT grasp, 4×4×8 cube grid): while
+    the chain row-steps from the open -y face down column ``ix`` to the
+    target row, the Franka hand over-reaches laterally into the
+    neighbouring cube columns (``ix ± 2`` — cube columns are at grid
+    ix 1/3/5 with empty channels between).  A cube in a neighbour
+    column at a row *strictly in front* of the target (``iy' < iy``,
+    i.e. one the hand sweeps past on the way in) is clipped by ~4-7 mm.
+    Same-row neighbours (the hand descends centred there) and
+    behind-row neighbours (never approached) do NOT clip — so the band
+    is rows ``0 .. iy-1`` only.
+
+    The collision proxy (hand_capsule) is ~4 mm thinner than the real
+    hand mesh and the mesh is collision-disabled, so MuJoCo's
+    ``check_collisions`` misses this clip — hence this symbolic
+    fast-reject.
+
+    ASYMMETRIC: the hand over-reaches toward LOWER ix only.  Measured
+    clips reaching column 3:
+      * -x neighbour (col 1): -4 to -7 mm  → real clip, reject
+      * +x neighbour (col 5): -0.6 to +0.2 mm → within the ~2 mm
+        tolerance the system already allows → do NOT reject
+    A symmetric rule produces false negatives (it rejects the +x
+    graze) and breaks valid reference plans that leave a +x-neighbour
+    cube in place.  So only the ``ix - 2`` column is checked.
+
+    O(rows); no IK / physics.  ``False`` for non-interior / malformed.
+    """
+    if not cell_id.startswith(_INTERIOR_PREFIX):
+        return False
+    try:
+        suffix = cell_id[len(_INTERIOR_PREFIX):]
+        ix_str, iy_str = suffix.split("_")
+        ix, iy = int(ix_str), int(iy_str)
+    except ValueError:
+        return False
+    ix_adj = ix - 2                        # -x neighbour cube column only
+    if ix_adj not in (1, 3, 5):
+        return False                       # no cube column on the -x side
+    for iy_prime in range(iy):             # rows 0 .. iy-1 (in front)
+        if f"{_INTERIOR_PREFIX}{ix_adj}_{iy_prime}" in occupied:
+            return True
+    return False
+
+
 def _prefilter_reject(
     action: Tuple, state: Dict[Tuple, bool],
 ) -> bool:
@@ -201,6 +249,10 @@ def _prefilter_reject(
         cube-cube collision check).
       * Source-cell not occupied by target obj (pick) — chain would
         descend onto empty air and grasp nothing.
+      * Lateral front clip (interior) — a cube in an adjacent cube
+        column in front of the target clips the Franka hand (a ~4-7mm
+        collision the MuJoCo proxy misses); see
+        ``_lateral_front_blocked``.
     """
     if not action or action[0] not in ("pick", "put"):
         return False
@@ -210,6 +262,10 @@ def _prefilter_reject(
 
     # Column-front occlusion — covers both pick and put for interior.
     if _column_front_blocked(occupied, cell_id):
+        return True
+    # Lateral front clip from adjacent cube columns.  For a put, the
+    # held obj isn't in ``occupied`` so no self-exclusion needed.
+    if _lateral_front_blocked(occupied, cell_id):
         return True
 
     if verb == "pick":
@@ -244,9 +300,13 @@ def _prefilter_reject_pick_place(
 
     Rejects if the source cell isn't occupied by the target obj OR
     the target cell is already occupied OR either cell is column-
-    front-blocked.  Same one-way implication soundness as the base
-    ``_prefilter_reject``: a rejection means the chain would fail; a
-    non-rejection means run the chain to determine outcome.
+    front-blocked OR laterally front-clipped.  Same one-way
+    implication soundness as the base ``_prefilter_reject``.
+
+    Lateral check on the target cell uses ``occupied - {cf}``: by the
+    time the put sub-chain reaches ``ct`` the obj has been picked, so
+    it no longer occupies ``cf`` (which could otherwise be a front
+    neighbour of ``ct``).
     """
     if not action or action[0] != "pick-place" or len(action) < 4:
         return False
@@ -254,11 +314,18 @@ def _prefilter_reject_pick_place(
     occupied = _occupied_cells(state)
     if _column_front_blocked(occupied, cf):
         return True
-    if _column_front_blocked(occupied, ct):
-        return True
     if _occupant_at(state, cf) != obj:
         return True
     if _occupant_at(state, ct) is not None:
+        return True
+    # Lateral clip — source reach uses current occupancy; target reach
+    # uses occupancy after the pick (obj removed from cf).
+    if _lateral_front_blocked(occupied, cf):
+        return True
+    occupied_after_pick = occupied - {cf}
+    if _column_front_blocked(occupied_after_pick, ct):
+        return True
+    if _lateral_front_blocked(occupied_after_pick, ct):
         return True
     return False
 
