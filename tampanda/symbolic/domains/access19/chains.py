@@ -208,12 +208,26 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         return True
 
     def _try_cartesian(target: np.ndarray, n_substeps: int):
-        for q in _QUATS:
-            p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
-                                    slerp_orientation=False)
-            if p is not None:
-                return p
-        return None
+        # FAST-mode collision-check reduction (Trigger 1): plan_to_pose
+        # validates joint_check_steps segment points between every
+        # substep; in FAST the chain teleports to path[-1] and never
+        # traverses, so the dense segment sub-sampling checks a
+        # trajectory that's never executed.  Drop it to 3 in FAST.
+        fast = bool(getattr(env, "_fast_mode", False))
+        saved_jcs = None
+        if fast:
+            saved_jcs = lik.joint_check_steps
+            lik.joint_check_steps = 3
+        try:
+            for q in _QUATS:
+                p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
+                                        slerp_orientation=False)
+                if p is not None:
+                    return p
+            return None
+        finally:
+            if saved_jcs is not None:
+                lik.joint_check_steps = saved_jcs
 
     def _try_lerp_then_cartesian(target: np.ndarray,
                                     lerp_substeps: int,
@@ -224,7 +238,15 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         (vertical lift / descent / lift-back) where the post-pick joint
         config can be in a basin where pure Cartesian-substep IK can't
         navigate.
+
+        FAST-mode substep reduction (Trigger 2): the lift/descent lerps
+        validate ``n_substeps`` collision points, but FAST teleports to
+        the endpoint — cap to 4 (the lerp) / 6 (the Cartesian fallback)
+        in FAST since the intermediate points aren't executed.
         """
+        if getattr(env, "_fast_mode", False):
+            lerp_substeps = min(lerp_substeps, 4)
+            cart_substeps = min(cart_substeps, 6)
         p = _try_lerp(target, n_substeps=lerp_substeps)
         if p is not None:
             return p
@@ -438,12 +460,16 @@ def make_access19_put_fn(env, executor, workspace: Workspace,
         EE pose, so the subsequent descent lerp couldn't continue
         cleanly.  Kept the LUT for short-circuit only.
         """
-        if (getattr(env, "_fast_mode", False)
-                and seed_lut is not None
-                and cell_id is not None
+        fast = bool(getattr(env, "_fast_mode", False))
+        if (fast and seed_lut is not None and cell_id is not None
                 and seed_lut.all_unreachable(cell_id)):
             return None
-        return _try_cartesian(target, n_substeps=16)
+        # Trigger 1: traverse runs at safe_z (held cube clears resting
+        # deck cubes by altitude); FAST teleports, so 6 substeps suffice
+        # instead of 16.  joint_check_steps drops to 3 inside
+        # _try_cartesian.
+        n_sub = 6 if fast else 16
+        return _try_cartesian(target, n_substeps=n_sub)
 
     def _put_deck(obj_name: str, target_pos: np.ndarray,
                     cell_id: Optional[str] = None) -> bool:
@@ -626,16 +652,34 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         return True
 
     def _try_cartesian(target: np.ndarray, n_substeps: int):
-        for q in _QUATS:
-            p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
-                                    slerp_orientation=False)
-            if p is not None:
-                return p
-        return None
+        # FAST-mode collision-check reduction (Trigger 1): plan_to_pose
+        # validates joint_check_steps segment points between every
+        # substep; in FAST the chain teleports to path[-1] and never
+        # traverses, so the dense segment sub-sampling checks a
+        # trajectory that's never executed.  Drop it to 3 in FAST.
+        fast = bool(getattr(env, "_fast_mode", False))
+        saved_jcs = None
+        if fast:
+            saved_jcs = lik.joint_check_steps
+            lik.joint_check_steps = 3
+        try:
+            for q in _QUATS:
+                p = lik.plan_to_pose(target, q, n_substeps=n_substeps,
+                                        slerp_orientation=False)
+                if p is not None:
+                    return p
+            return None
+        finally:
+            if saved_jcs is not None:
+                lik.joint_check_steps = saved_jcs
 
     def _try_lerp_then_cartesian(target: np.ndarray,
                                     lerp_substeps: int,
                                     cart_substeps: int):
+        # FAST-mode substep reduction (Trigger 2) — see put-side twin.
+        if getattr(env, "_fast_mode", False):
+            lerp_substeps = min(lerp_substeps, 4)
+            cart_substeps = min(cart_substeps, 6)
         p = _try_lerp(target, n_substeps=lerp_substeps)
         if p is not None:
             return p
@@ -812,14 +856,15 @@ def make_access19_pick_fn(env, executor, workspace: Workspace,
         otherwise run natural Cartesian (with lerp fallback) so
         downstream descent sees the natural-basin qpos.
         """
-        if (getattr(env, "_fast_mode", False)
-                and seed_lut is not None
-                and cell_id is not None
+        fast = bool(getattr(env, "_fast_mode", False))
+        if (fast and seed_lut is not None and cell_id is not None
                 and seed_lut.all_unreachable(cell_id)):
             return None
-        p = _try_cartesian(target, n_substeps=16)
+        # Trigger 1: 6 substeps in FAST (was 16).
+        n_sub = 6 if fast else 16
+        p = _try_cartesian(target, n_substeps=n_sub)
         if p is None:
-            p = _try_lerp(target, n_substeps=16)
+            p = _try_lerp(target, n_substeps=n_sub)
         return p
 
     def _pick_deck(obj_name: str, source_pos: np.ndarray,
