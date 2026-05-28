@@ -672,21 +672,23 @@ def _v45_worker_easy(_task_idx: int) -> Optional[Tuple[Template, List[Tuple]]]:
 
 
 def _v46_worker_easy(
-    _task_idx: int,
+    spec: Tuple[int, bool],
 ) -> Optional[Tuple[Template, List[Tuple], int, bool]]:
-    """Sample + plan one v4.6 graded-easy problem.
+    """Plan one v4.6 graded-easy problem for a targeted ``(k_blocking,
+    return_flag)`` spec.
 
-    20% of samples skip return (one-way blocker moves) so the short
-    even-length plans (2/4/6) the strict-return rule can't produce
-    become reachable.  Returns ``(template, plan, plan_len,
+    Targeted (rather than uniform-random) sampling lets the
+    orchestrator steer toward specific plan lengths — e.g. ``(1,
+    False)`` reliably yields a length-4 no-return plan (clear 1
+    blocker one-way + move OoI).  Clutter count is still randomized
+    for layout diversity.  Returns ``(template, plan, plan_len,
     return_flag)`` or ``None``.
     """
     s = _V45_WORKER_STATE
     if not s:
         return None
     rng = s["rng"]
-    return_blockers = bool(rng.random() >= 0.20)   # 20% no-return
-    k = int(rng.integers(0, 3))                     # 0,1,2 blocking
+    k, return_blockers = spec
     n_clutter = int(rng.integers(0, 3))             # 0,1,2 clutter
     tpl = easy_ladder(rng, k_blocking=k,
                             return_blockers=return_blockers,
@@ -1025,12 +1027,54 @@ def _generate_v4_6_curated(
     num_workers = max(1, getattr(args, "num_workers", None) or 1)
     print(f"[v4.6 curated] pool size: {num_workers}")
 
-    # --- Section 1: graded easy, bucketed by (len, return) -----------
-    print(f"[v4.6 curated] Section 1: graded easy (easy_ladder)")
-    target_easy = 160
-    cap_per_bucket = 25       # cap so no (len, return) class dominates
-    max_easy_len = 10         # anything longer isn't "easy"
-    easy_buckets: Dict[Tuple[int, bool], List[Tuple[Template, List[Tuple]]]] = (
+    # --- Section 1: graded easy, percentage-targeted buckets ---------
+    # The whole train set targets ~600 problems (hard section ≈ 340).
+    # Explicit easy length quotas (% of whole dataset):
+    #   * length 2          ≥ 5%   (k=0, just place the OoI)
+    #   * length 4 no-return  5%   (k=1, clear 1 blocker one-way + OoI)
+    #   * length 6          10%   (both return AND no-return flavors)
+    # Remaining easy budget fills intermediate lengths (8-14); the
+    # hard section supplies the long tail.
+    print(f"[v4.6 curated] Section 1: graded easy (percentage-targeted)")
+    TOTAL_TARGET = 600
+    tgt_len2 = round(0.05 * TOTAL_TARGET)         # 30
+    tgt_len4_noret = round(0.05 * TOTAL_TARGET)   # 30
+    tgt_len6 = round(0.10 * TOTAL_TARGET)         # 60
+    easy_total = 260                              # easy + hard(~340) ≈ 600
+    tgt_intermediate = max(
+        0, easy_total - (tgt_len2 + tgt_len4_noret + tgt_len6))  # 140
+
+    # Bucket caps keyed by a classifier tag.
+    caps = {
+        "len2": tgt_len2,
+        "len4_noret": tgt_len4_noret,
+        "len6": tgt_len6,
+        "intermediate": tgt_intermediate,
+    }
+
+    def _classify_easy(plan_len: int, ret: bool) -> Optional[str]:
+        if plan_len == 2:
+            return "len2"
+        if plan_len == 4 and not ret:
+            return "len4_noret"
+        if plan_len == 6:
+            return "len6"
+        if 8 <= plan_len <= 14:
+            return "intermediate"
+        return None      # too long / not a target → discard
+
+    # Targeted spec list — bias (k, return) toward the length each
+    # bucket needs, oversampled so caps fill despite planner variance.
+    specs: List[Tuple[int, bool]] = []
+    specs += [(0, True)] * (tgt_len2 * 2)            # → length 2
+    specs += [(1, False)] * (tgt_len4_noret * 3)     # → length 4 no-return
+    specs += [(2, False)] * (tgt_len6 * 2)           # → length 6 no-return
+    specs += [(1, True)] * (tgt_len6 * 2)            # → length 6/8 return
+    specs += [(2, True)] * tgt_intermediate          # → intermediate
+    specs += [(1, True)] * tgt_intermediate          # → intermediate
+    rng.shuffle(specs)
+
+    easy_collected: Dict[str, List[Tuple[Template, List[Tuple]]]] = (
         collections.defaultdict(list))
 
     with mp.Pool(
@@ -1038,29 +1082,23 @@ def _generate_v4_6_curated(
         initializer=_v45_worker_init,
         initargs=(seed,),
     ) as pool:
-        n_tasks = target_easy * 6     # oversample — buckets + caps reject many
-        n_easy = 0
         for i, result in enumerate(
-            pool.imap_unordered(_v46_worker_easy, range(n_tasks))
+            pool.imap_unordered(_v46_worker_easy, specs)
         ):
             if result is not None:
                 tpl, plan, plan_len, ret = result
-                if plan_len <= max_easy_len:
-                    key = (plan_len, ret)
-                    if len(easy_buckets[key]) < cap_per_bucket:
-                        easy_buckets[key].append((tpl, plan))
-                        n_easy += 1
-            if n_easy >= target_easy:
+                tag = _classify_easy(plan_len, ret)
+                if tag is not None and len(easy_collected[tag]) < caps[tag]:
+                    easy_collected[tag].append((tpl, plan))
+            if all(len(easy_collected[t]) >= caps[t] for t in caps):
                 break
             if (i + 1) % 100 == 0:
-                print(f"  easy: {n_easy}/{target_easy} "
-                      f"({i + 1} tasks); buckets="
-                      f"{ {k: len(v) for k, v in sorted(easy_buckets.items())} }")
+                print(f"  easy ({i+1} tasks): "
+                      f"{ {t: len(easy_collected[t]) for t in caps} }")
 
-        easy_instances = [it for v in easy_buckets.values() for it in v]
+        easy_instances = [it for v in easy_collected.values() for it in v]
         print(f"  → {len(easy_instances)} easy instances; "
-              f"length×return buckets: "
-              f"{ {k: len(v) for k, v in sorted(easy_buckets.items())} }")
+              f"buckets: { {t: len(easy_collected[t]) for t in caps} }")
 
         # --- Section 2: hard base classes (IDENTICAL to v4.5) --------
         print(f"[v4.6 curated] Section 2: hard base classes (n=10-18)")
