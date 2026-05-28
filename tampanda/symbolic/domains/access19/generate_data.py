@@ -43,6 +43,7 @@ import multiprocessing as mp
 import shutil
 import tempfile
 import time
+import collections
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -70,6 +71,7 @@ from tampanda.symbolic.domains.access19.templates import (
     dense_front,
     dense_front_n,
     easy_l0,
+    easy_ladder,
     front_row_subset,
     goal_layout as template_goal_layout,
     gotcha_corridor_jam,
@@ -669,6 +671,34 @@ def _v45_worker_easy(_task_idx: int) -> Optional[Tuple[Template, List[Tuple]]]:
     return (tpl, plan)
 
 
+def _v46_worker_easy(
+    _task_idx: int,
+) -> Optional[Tuple[Template, List[Tuple], int, bool]]:
+    """Sample + plan one v4.6 graded-easy problem.
+
+    20% of samples skip return (one-way blocker moves) so the short
+    even-length plans (2/4/6) the strict-return rule can't produce
+    become reachable.  Returns ``(template, plan, plan_len,
+    return_flag)`` or ``None``.
+    """
+    s = _V45_WORKER_STATE
+    if not s:
+        return None
+    rng = s["rng"]
+    return_blockers = bool(rng.random() >= 0.20)   # 20% no-return
+    k = int(rng.integers(0, 3))                     # 0,1,2 blocking
+    n_clutter = int(rng.integers(0, 3))             # 0,1,2 clutter
+    tpl = easy_ladder(rng, k_blocking=k,
+                            return_blockers=return_blockers,
+                            n_clutter=n_clutter)
+    plan = _plan_one(tpl, s["env"], s["ws"], s["cfg"], s["executor"],
+                        s["pick_fn"], s["put_fn"], s["shelf_home"],
+                        planner_kind="astar", time_budget_s=120.0)
+    if plan is None:
+        return None
+    return (tpl, plan, len(plan), return_blockers)
+
+
 def _v45_worker_hard(
     spec: Tuple[str, int, Optional[str]],
 ) -> Optional[Tuple[Template, List[Tuple]]]:
@@ -967,6 +997,159 @@ def _generate_v4_5_curated(
     return len(all_train) + len(val_instances)
 
 
+def _generate_v4_6_curated(
+    args, output_dir: Path, seed: int,
+) -> int:
+    """Curated v4.6 generation.
+
+    Identical hard section to v4.5 (n ∈ [10, 18] curated classes,
+    100% return, augmented via perm + mirror), but a GRADED easy
+    section that fixes v4.5's degenerate easy tier:
+
+    * varied OoI placement (random column + depth) via easy_ladder
+    * 20% of easy problems skip return (one-way blocker moves) so the
+      short even-length plans (2/4/6) become reachable
+    * bucketed by (plan_len, return_flag) with a per-bucket cap so no
+      single structure dominates (v4.5 had 138 identical plans)
+
+    Returns total problems written.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    train_dir = output_dir / "train"
+    val_dir = output_dir / "val"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    val_dir.mkdir(parents=True, exist_ok=True)
+    _copy_domain(output_dir)
+
+    rng = np.random.default_rng(seed)
+    num_workers = max(1, getattr(args, "num_workers", None) or 1)
+    print(f"[v4.6 curated] pool size: {num_workers}")
+
+    # --- Section 1: graded easy, bucketed by (len, return) -----------
+    print(f"[v4.6 curated] Section 1: graded easy (easy_ladder)")
+    target_easy = 160
+    cap_per_bucket = 25       # cap so no (len, return) class dominates
+    max_easy_len = 10         # anything longer isn't "easy"
+    easy_buckets: Dict[Tuple[int, bool], List[Tuple[Template, List[Tuple]]]] = (
+        collections.defaultdict(list))
+
+    with mp.Pool(
+        num_workers,
+        initializer=_v45_worker_init,
+        initargs=(seed,),
+    ) as pool:
+        n_tasks = target_easy * 6     # oversample — buckets + caps reject many
+        n_easy = 0
+        for i, result in enumerate(
+            pool.imap_unordered(_v46_worker_easy, range(n_tasks))
+        ):
+            if result is not None:
+                tpl, plan, plan_len, ret = result
+                if plan_len <= max_easy_len:
+                    key = (plan_len, ret)
+                    if len(easy_buckets[key]) < cap_per_bucket:
+                        easy_buckets[key].append((tpl, plan))
+                        n_easy += 1
+            if n_easy >= target_easy:
+                break
+            if (i + 1) % 100 == 0:
+                print(f"  easy: {n_easy}/{target_easy} "
+                      f"({i + 1} tasks); buckets="
+                      f"{ {k: len(v) for k, v in sorted(easy_buckets.items())} }")
+
+        easy_instances = [it for v in easy_buckets.values() for it in v]
+        print(f"  → {len(easy_instances)} easy instances; "
+              f"length×return buckets: "
+              f"{ {k: len(v) for k, v in sorted(easy_buckets.items())} }")
+
+        # --- Section 2: hard base classes (IDENTICAL to v4.5) --------
+        print(f"[v4.6 curated] Section 2: hard base classes (n=10-18)")
+        hard_specs: List[Tuple[str, int, Optional[str]]] = []
+        for n in range(10, 16):
+            for ooi_cell in _CUBE_BACK_CELLS:
+                hard_specs.append(("dense_front_n", n, ooi_cell))
+            for _ in range(2):
+                hard_specs.append(("scattered_subset", n, None))
+        for n in (16, 17):
+            for ooi_cell in _CUBE_BACK_CELLS[:2]:
+                hard_specs.append(("dense_front_n", n, ooi_cell))
+        hard_specs.append(("canonical_18", 18, None))
+
+        print(f"  dispatching {len(hard_specs)} hard classes to "
+              f"{num_workers} workers")
+        hard_classes: List[Tuple[Template, List[Tuple]]] = []
+        for spec, result in zip(
+            hard_specs, pool.imap(_v45_worker_hard, hard_specs)
+        ):
+            if result is None:
+                print(f"  [SKIP] {spec}: plan failed")
+                continue
+            tpl, plan = result
+            hard_classes.append((tpl, plan))
+            print(f"  {spec}: plan_len={len(plan)}")
+
+    print(f"  → {len(hard_classes)} hard base classes planned")
+
+    scratch = tempfile.TemporaryDirectory(prefix="v4_6_main_")
+    env, ws, cfg, executor, pick_fn, put_fn, shelf_home = _setup_env(
+        Path(scratch.name))
+
+    # --- Section 3: augment hard classes (IDENTICAL to v4.5) ---------
+    print(f"[v4.6 curated] Section 3: augment (5 perms × ~2 mirrors)")
+    augmented_hard: List[Tuple[Template, List[Tuple]]] = []
+    for tpl, plan in hard_classes:
+        augmented_hard.extend(_augment_class(
+            tpl, plan, rng,
+            env, ws, cfg, executor, pick_fn, put_fn, shelf_home,
+            n_perms=5, mirror=True,
+        ))
+    print(f"  → {len(augmented_hard)} augmented hard instances")
+
+    # --- Section 4: write train --------------------------------------
+    all_train = easy_instances + augmented_hard
+    rng.shuffle(all_train)
+    for i, (tpl, plan) in enumerate(all_train, start=1):
+        _write_problem_and_plan(tpl, plan, ws, train_dir, i, "train")
+    print(f"[v4.6 curated] wrote {len(all_train)} train problems")
+
+    # --- Section 5: val (10 problems, canonical_18-biased) -----------
+    val_target = 10
+    val_instances: List[Tuple[Template, List[Tuple]]] = []
+    c18_plan = None
+    c18_tpl = None
+    for tpl, plan in hard_classes:
+        if tpl.metadata.get("n_blockers") == 18 or "canonical_18" in tpl.name:
+            c18_plan, c18_tpl = plan, tpl
+            break
+    if c18_plan is not None:
+        val_instances.append((c18_tpl, c18_plan))
+        used = set()
+        while len(val_instances) < 5:
+            perm = _random_blocker_perm(c18_tpl, rng)
+            if not perm:
+                break
+            key = tuple(sorted(perm.items()))
+            if key in used:
+                continue
+            used.add(key)
+            rt, rp = permute_blockers(c18_tpl, c18_plan, perm)
+            val_instances.append((rt, rp))
+    while len(val_instances) < val_target and hard_classes:
+        tpl, plan = hard_classes[int(rng.integers(0, len(hard_classes)))]
+        perm = _random_blocker_perm(tpl, rng)
+        if perm:
+            rt, rp = permute_blockers(tpl, plan, perm)
+            val_instances.append((rt, rp))
+        else:
+            val_instances.append((tpl, plan))
+    val_instances = val_instances[:val_target]
+    for i, (tpl, plan) in enumerate(val_instances, start=1):
+        _write_problem_and_plan(tpl, plan, ws, val_dir, i, "val")
+    print(f"[v4.6 curated] wrote {len(val_instances)} val problems")
+
+    return len(all_train) + len(val_instances)
+
+
 # ---------------------------------------------------------------------------
 # Split runner (single-process)
 # ---------------------------------------------------------------------------
@@ -1255,6 +1438,13 @@ def main() -> int:
                                    "dense_front_n with n∈[3,18] uniform "
                                    "and 100%% return; val biases half to "
                                    "canonical_18). Output dirs flat.")
+    p.add_argument("--bundle-v4-6", action="store_true",
+                          help="generate the v4.6 bundle — same hard "
+                                   "section as v4.5 but a GRADED easy tier "
+                                   "(easy_ladder, varied OoI placement, "
+                                   "20%% no-return for short even-length "
+                                   "plans, bucketed by length+return). "
+                                   "Output dirs flat.")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -1296,6 +1486,11 @@ def main() -> int:
     # train_600_v4_5 curriculum spec dispatches.
     if args.bundle_v4_5:
         _generate_v4_5_curated(args, args.output_dir, args.seed)
+        return 0
+
+    # V4.6 bundle mode — graded easy tier + same hard section as v4.5.
+    if args.bundle_v4_6:
+        _generate_v4_6_curated(args, args.output_dir, args.seed)
         return 0
 
     # V4 bundle mode — train_600 + val_100 with dense_front_n L4 +

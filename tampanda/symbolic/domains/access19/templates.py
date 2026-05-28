@@ -414,6 +414,88 @@ def mirror_x(template: Template) -> Template:
     )
 
 
+def easy_ladder(
+    rng: np.random.Generator, *,
+    k_blocking: int,
+    return_blockers: bool,
+    n_clutter: int = 0,
+) -> Template:
+    """Graded easy problem with VARIED OoI placement.
+
+    Built to give a smooth, diverse easy tier (fixes the v4.5 defect
+    where every easy problem collapsed to the same plan):
+
+    * **OoI start**: random cube column ``ix ∈ {1,3,5}`` and random
+      depth ``iy ∈ [2, 6]`` — NOT the fixed back-centre ``(3, 6)``.
+    * **k_blocking**: this many blockers placed in front of the OoI
+      in its own column (rows ``< iy_ooi``) — these MUST be cleared,
+      so the plan length scales with ``k_blocking``.
+    * **n_clutter**: non-blocking blockers placed elsewhere (other
+      columns, or behind the OoI in its column) — present as graph
+      nodes but never block the OoI's extraction.
+    * **OoI goal**: a random ``shelf_top`` cell.
+    * **return_blockers**: when False, moved blockers are left wherever
+      the planner drops them (one-way) — gives the short even-length
+      plans (2, 4, 6) the strict-return rule can't produce.  When
+      True, every blocker returns to its start cell.
+
+    Blocker labels are shuffled across the chosen cells so the
+    "blocking" blocker isn't always ``blocker_0/1`` — adds label
+    diversity for the GNN.
+    """
+    ix_ooi = int(rng.choice(_CUBE_COLS))
+    iy_ooi = int(rng.integers(2, 7))          # depth 2..6 (room in front)
+    ooi_cell = Cell("shelf_interior", ix_ooi, iy_ooi).id
+
+    # Blocking cells: k distinct rows in front of the OoI, same column.
+    front_rows = list(range(iy_ooi))
+    rng.shuffle(front_rows)
+    k = min(k_blocking, len(front_rows))
+    blocking_cells = [Cell("shelf_interior", ix_ooi, iy).id
+                          for iy in sorted(front_rows[:k])]
+
+    # Clutter pool: any cube cell that does NOT block the OoI and is
+    # not the OoI cell itself.  (A cell in the OoI's column with
+    # iy < iy_ooi WOULD block, so exclude those.)
+    clutter_pool: List[str] = []
+    for ix in _CUBE_COLS:
+        for iy in range(7):
+            c = Cell("shelf_interior", ix, iy).id
+            if c == ooi_cell or c in blocking_cells:
+                continue
+            if ix == ix_ooi and iy < iy_ooi:
+                continue                      # would block — skip
+            clutter_pool.append(c)
+    rng.shuffle(clutter_pool)
+    clutter_cells = clutter_pool[:n_clutter]
+
+    all_cells = blocking_cells + clutter_cells
+    rng.shuffle(all_cells)                    # randomize blocker labels
+    source = _name_blockers(all_cells)
+    source.append(("ooi", ooi_cell))
+
+    deck_cells = [Cell("shelf_top", ix, iy).id
+                      for ix in range(7) for iy in range(7)]
+    ooi_goal = str(rng.choice(deck_cells))
+
+    if return_blockers:
+        goal_dict = {o: c for o, c in source}
+        goal_dict["ooi"] = ooi_goal
+        goal = list(goal_dict.items())
+    else:
+        goal = [("ooi", ooi_goal)]
+
+    return Template(
+        name=f"easy_ladder_k{k}_c{len(clutter_cells)}"
+                  f"{'_return' if return_blockers else '_noret'}",
+        source_placements=source,
+        goal_placements=goal,
+        metadata={"k_blocking": k, "n_clutter": len(clutter_cells),
+                       "return": return_blockers, "ooi_cell": ooi_cell,
+                       "n_blockers": len(all_cells)},
+    )
+
+
 def permute_blockers(
     template: "Template",
     plan: List[Tuple],
